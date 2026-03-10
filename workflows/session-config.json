@@ -1,0 +1,54 @@
+{
+  "name": "\ud83d\udd27 Session Bootstrap Config",
+  "nodes": [
+    {
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "session-config-trigger-v1",
+      "parameters": {
+        "path": "session-config",
+        "httpMethod": "POST",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "1fe40abd-3147-47db-a520-db752959abb5"
+    },
+    {
+      "name": "Build Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        300,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\n// Session Bootstrap Config \u2014 dynamically reads all infrastructure state\n// Returns: auth patterns, webhook paths, table IDs, workflow IDs, phase status\n\nconst N8N_HOST = $vars.N8N_HOST;\nconst API_KEY = $vars.N8N_INTERNAL_API_KEY;\n\nif (!N8N_HOST || !API_KEY) {\n  throw new Error('Missing required vars: N8N_HOST=' + !!N8N_HOST + ', N8N_INTERNAL_API_KEY=' + !!API_KEY);\n}\n\nconst API_BASE = N8N_HOST + '/api/v1';\n\n// Helper: make authenticated n8n API call\nasync function n8nApi(path) {\n  const resp = await this.helpers.httpRequest({\n    method: 'GET',\n    url: API_BASE + path,\n    headers: { 'X-N8N-API-KEY': API_KEY },\n    returnFullResponse: true,\n  });\n  return typeof resp.body === 'string' ? JSON.parse(resp.body) : resp.body;\n}\n\n// 1. Get ALL active workflows (paginated)\nlet allWorkflows = [];\nlet cursor = null;\nfor (let page = 0; page < 10; page++) {\n  const params = cursor ? '?limit=100&cursor=' + cursor : '?limit=100&active=true';\n  const result = await n8nApi.call(this, '/workflows' + params);\n  const batch = result.data || [];\n  allWorkflows = allWorkflows.concat(batch);\n  if (!result.nextCursor || batch.length === 0) break;\n  cursor = result.nextCursor;\n}\n\n// 2. Extract webhook paths from trigger nodes in each workflow\nconst webhookPaths = {};\nconst workflowIndex = {};\n\nfor (const wf of allWorkflows) {\n  workflowIndex[wf.id] = {\n    name: wf.name,\n    active: wf.active,\n    updatedAt: wf.updatedAt,\n  };\n  \n  const nodes = wf.nodes || [];\n  for (const node of nodes) {\n    const nodeType = (node.type || '').toLowerCase();\n    const params = node.parameters || {};\n    \n    // Only trigger webhooks \u2014 not respondToWebhook\n    if (nodeType.includes('webhook') && !nodeType.includes('respond') && params.path) {\n      const key = wf.name.replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');\n      webhookPaths[key] = {\n        workflow_id: wf.id,\n        workflow_name: wf.name,\n        path: '/webhook/' + params.path,\n        method: params.httpMethod || 'GET',\n        response_mode: params.responseMode || 'onReceived',\n      };\n    }\n  }\n}\n\n// 3. Get all variables (paginated \u2014 n8n returns max 100 per page)\nlet allVars = [];\nlet varCursor = null;\nfor (let vPage = 0; vPage < 10; vPage++) {\n  const vParams = varCursor ? '?limit=100&cursor=' + varCursor : '?limit=100';\n  const varsResult = await n8nApi.call(this, '/variables' + vParams);\n  const varBatch = varsResult.data || [];\n  allVars = allVars.concat(varBatch);\n  if (!varsResult.nextCursor || varBatch.length === 0) break;\n  varCursor = varsResult.nextCursor;\n}\nconst variables = {};\nfor (const v of allVars) {\n  // Don't expose secret values, just confirm they exist\n  const key = v.key || v.name;\n  const val = v.value || '';\n  const isSensitive = key.toLowerCase().includes('key') || \n                       key.toLowerCase().includes('secret') || \n                       key.toLowerCase().includes('token') ||\n                       key.toLowerCase().includes('password');\n  variables[key] = isSensitive ? '***exists***' : val;\n}\n\n// 4. Get DataTable IDs from variables\nconst tableIds = {\n  registry: variables.REGISTRY_V2_API_TABLE_ID || 'NOT_SET',\n  actions: variables.REGISTRY_V2_ACTION_TABLE_ID || 'NOT_SET',\n  mcp_schemas: 'fSmVnP9qbbqQFAeI',\n};\n\n// 5. Verify DataTable access \u2014 try to read 1 row from each\nconst tableStatus = {};\nfor (const [name, tableId] of Object.entries(tableIds)) {\n  if (tableId === 'NOT_SET') {\n    tableStatus[name] = { status: 'error', message: 'Table ID variable not set' };\n    continue;\n  }\n  try {\n    const rows = await n8nApi.call(this, '/data-tables/' + tableId + '/rows?limit=1');\n    tableStatus[name] = { \n      status: 'ok', \n      table_id: tableId,\n      has_data: (rows.data || []).length > 0,\n      has_more: !!rows.nextCursor,\n    };\n  } catch (e) {\n    tableStatus[name] = { status: 'error', table_id: tableId, message: e.message };\n  }\n}\n\n// 6. Critical workflow IDs (read from current active workflows)\nconst criticalWorkflows = {};\nconst criticalNames = {\n  'orchestrate-v2': 'v2_gateway',\n  'gateway-e2e-test': 'e2e_test',\n  'system-audit': 'system_audit',\n  'health-check-v2': 'health_monitor',\n  'handler-google-suite': 'google_handler',\n  'ai-gateway': 'mcp_gateway',\n};\n\nfor (const [pathFragment, label] of Object.entries(criticalNames)) {\n  for (const [key, info] of Object.entries(webhookPaths)) {\n    if (info.path.includes(pathFragment)) {\n      criticalWorkflows[label] = {\n        workflow_id: info.workflow_id,\n        webhook_path: info.path,\n        method: info.method,\n        active: true,\n      };\n      break;\n    }\n  }\n}\n\n// Also find non-webhook critical workflows\nfor (const wf of allWorkflows) {\n  const name = wf.name || '';\n  if (name.includes('Rate Limit') && !criticalWorkflows.rate_limiter) {\n    criticalWorkflows.rate_limiter = { workflow_id: wf.id, active: wf.active };\n  }\n  if (name.includes('Backup') && name.includes('GitHub') && !name.includes('DataTable')) {\n    criticalWorkflows.github_backup_wf = criticalWorkflows.github_backup_wf || { workflow_id: wf.id, active: wf.active };\n  }\n  if (name.includes('Backup') && name.includes('DataTable')) {\n    criticalWorkflows.github_backup_dt = { workflow_id: wf.id, active: wf.active };\n  }\n  if (name.includes('MCP') && name.includes('Gateway')) {\n    criticalWorkflows.mcp_gateway = criticalWorkflows.mcp_gateway || { workflow_id: wf.id, active: wf.active };\n  }\n}\n\n// 7. Build the full config response\nconst config = {\n  generated_at: new Date().toISOString(),\n  n8n_host: N8N_HOST,\n  \n  auth_patterns: {\n    n8n_rest_api: {\n      header: 'X-N8N-API-KEY',\n      note: 'NEVER use Authorization: Bearer for n8n REST API',\n    },\n    gateway_v2: {\n      header: 'x-api-key',\n      note: 'Use gateway master key or per-client key',\n    },\n    gateway_handlers: {\n      header: 'x-internal-secret',\n      note: 'Internal handler secret for workflow-to-workflow calls',\n    },\n    mcp_gateway: {\n      header: 'Authorization: Bearer',\n      note: 'MCP server trigger uses Bearer auth',\n    },\n  },\n  \n  shell_constraints: {\n    default_shell: '/bin/sh (dash)',\n    bash_available: '/usr/bin/bash',\n    recommendation: 'Use python3 for all n8n API interaction \u2014 dash lacks bash features (source, declare -A, arrays)',\n  },\n  \n  webhook_paths: webhookPaths,\n  \n  critical_workflows: criticalWorkflows,\n  \n  table_ids: tableIds,\n  table_status: tableStatus,\n  \n  variables_present: Object.keys(variables),\n  \n  total_active_workflows: allWorkflows.length,\n  total_webhook_endpoints: Object.keys(webhookPaths).length,\n  \n  e2e_notes: {\n    trigger_path: criticalWorkflows.e2e_test?.webhook_path || 'NOT_FOUND',\n    response_mode: 'onReceived (async \u2014 results sent via email, poll executions for programmatic access)',\n    polling: 'GET /api/v1/executions?workflowId={id}&limit=1&status=success',\n  },\n  \n  phase_status: {\n    phase_a: 'COMPLETE \u2014 A1-A6 all verified',\n    phase_b: 'COMPLETE \u2014 B1-B5 all verified (rate limiting, permissions, audit, schema validation)',\n    phase_c: 'NOT STARTED \u2014 36 E2E failures to debug',\n    phase_d: 'NOT STARTED \u2014 API expansion (Kling, Suno, ElevenLabs)',\n  },\n};\n\nreturn [{ json: config }];\n"
+      },
+      "id": "ee02ad56-653f-41f8-9730-4fc3296ce66c"
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Build Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  }
+}
