@@ -1,0 +1,23 @@
+{
+  "note": "This is a STATIC FALLBACK. Always prefer the live /webhook/session-config endpoint.",
+  "n8n_host": "https://mmurawala.app.n8n.cloud",
+  "auth_patterns": {
+    "n8n_rest_api": {
+      "header": "X-N8N-API-KEY"
+    },
+    "gateway_v2": {
+      "header": "x-api-key"
+    },
+    "gateway_handlers": {
+      "header": "x-internal-secret"
+    },
+    "mcp_gateway": {
+      "header": "Authorization: Bearer"
+    }
+  },
+  "shell_constraints": {
+    "default_shell": "/bin/sh (dash)",
+    "recommendation": "Use python3 for all n8n API interaction"
+  },
+  "session_config_endpoint": "POST /webhook/session-config"
+}
