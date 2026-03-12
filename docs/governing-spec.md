@@ -81,6 +81,7 @@ Prefer fewer nodes over more nodes. Prefer Code nodes with clear logic over comp
 | action_map_v2 | REGISTRY_V2_ACTION_TABLE_ID (UFFQp3heMFys4gPB) | Domain + action → route type, test config |
 | health_test_config | HEALTH_TEST_CONFIG_TABLE_ID (MmlcQmCuoz3M33pD) | Health check parameters |
 | e2e_test_manifest | E2E_MANIFEST_TABLE_ID (2pg9Nm0o7Jd6kU1m) | 242 test cases |
+| session_state | 2z5zRvsJZsGBtsmw | SESSION_STATE_TABLE_ID | Session state persistence |
 | tenant_config | TENANT_CONFIG_TABLE_ID (NSkfB6vp9d4lcNii) | Client configuration |
 | credential_health | CREDENTIAL_HEALTH_TABLE_ID (wCfdPfENLbe1jvc2) | Credential expiry tracking |
 | ai_cost_log | AI_COST_TRACKER_TABLE_ID (t4tTjYDIkNYdfhdh) | AI API cost logging |
@@ -221,3 +222,23 @@ This workaround must maintain security parity with Execute Workflow. Monitor wor
 6. **Google Ads API:** v23+ only. v17-v19 sunset. Always verify current version before making calls.
 
 7. **GTM State:** V55 published 2026-03-04. Clean: 16 tags, 15 triggers, 30 variables. mishaal@ascendgtm.net is Administrator.
+
+
+## Handover Domain
+
+The `handover` domain provides platform operations tools accessible via MCP from any AI frontend (Claude.ai, ChatGPT, Claude Desktop, Perplexity).
+
+**Handler workflow:** `Gateway: Handover` (OahB4HRFvyy4C5Zn)
+**DataTable:** `session_state` (2z5zRvsJZsGBtsmw / $vars.SESSION_STATE_TABLE_ID)
+
+### Actions (7)
+
+| Action | Description |
+|--------|-------------|
+| get_governing_spec | Fetch this spec from GitHub |
+| get_handover_template | Fetch lean handover doc template |
+| run_preflight | Validate n8n instance connectivity and config |
+| run_audit | Scan workflows for governing spec violations |
+| get_session_state | Read session state for multi-session continuity |
+| update_session_state | Write session state for multi-session continuity |
+| get_skill_version | Get handover framework skill version from GitHub |
