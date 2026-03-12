@@ -13,7 +13,7 @@ Use this template for the session-specific part of a handover. The n8n-handover-
 **Date:** [YYYY-MM-DD]
 **Operating Mode:** [Non-stop / Checkpoint / Research-first]
 **Skill:** n8n-handover-framework (load before starting)
-**Governing Spec:** [GitHub raw URL to governing-spec.md]
+**Governing Spec:** https://raw.githubusercontent.com/mishaal-cloud/n8n-ops/main/docs/governing-spec.md
 
 ## Success Criteria
 
@@ -71,8 +71,8 @@ DO NOT touch these workflows: [list]
 [Step-by-step plan. Code snippets where approach is non-obvious.]
 
 **Test Cases:**
-1. [Input → Expected output]
-2. [Input → Expected output]
+1. [Input -> Expected output]
+2. [Input -> Expected output]
 
 **Acceptance Criteria:**
 - [ ] [verifiable criterion]
