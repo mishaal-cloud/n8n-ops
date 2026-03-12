@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "ascend-gateway": {
+      "command": "npx",
+      "args": [
+        "-y", "mcp-remote",
+        "https://mmurawala.app.n8n.cloud/mcp/ai-gateway/sse",
+        "--header",
+        "Authorization: Bearer mcp_gateway_master_2026"
+      ]
+    }
+  }
+}
