@@ -1,0 +1,232 @@
+{
+  "snapshot_at": "2026-03-18T04:38:46.305Z",
+  "reason": "Pre-modification snapshot: ADR-001 Phase 1: Add workflow JSON + DataTable schema export to nightly backup",
+  "session_id": "cowork-2026-03-18",
+  "workflow": {
+    "name": "📦 DataTable Backup to GitHub",
+    "id": "CAFbxMLIY2OjEpYH",
+    "active": true,
+    "nodes": [
+      {
+        "name": "Daily Schedule",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          0,
+          300
+        ],
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "cronExpression",
+                "expression": "0 6 * * *"
+              }
+            ]
+          }
+        },
+        "id": "f79b00bb-4797-4678-9d28-f2d1ee928259"
+      },
+      {
+        "name": "On-Demand Trigger",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2,
+        "position": [
+          0,
+          500
+        ],
+        "webhookId": "backup-dt-on-demand",
+        "parameters": {
+          "path": "backup-datatables",
+          "httpMethod": "POST",
+          "responseMode": "onReceived",
+          "options": {}
+        },
+        "id": "dd0dc1ff-120f-47f5-aa97-065f89746980"
+      },
+      {
+        "name": "Export DataTables",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          240,
+          400
+        ],
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "// Export all DataTables and prepare for GitHub backup\nconst API_KEY = $vars.N8N_INTERNAL_API_KEY;\nconst N8N_BASE = $vars.N8N_HOST + '/api/v1';\n\nconst TABLES = [\n  { id: 'IUOPfsksOPoFG7gV', name: 'tenant_auth' },\n  { id: 'mIzRq6aFd01J7MPZ', name: 'capability_catalog' },\n  { id: '8uXPK6pD52xG90Y0', name: 'api_registry_v2' },\n  { id: ($vars.REGISTRY_V2_ACTION_TABLE_ID || 'UFFQp3heMFys4gPB'), name: 'action_map_v2' },\n  { id: 'fSmVnP9qbbqQFAeI', name: 'action_schemas_v1' },\n  { id: 'MmlcQmCuoz3M33pD', name: 'health_test_config' },\n  { id: 't4tTjYDIkNYdfhdh', name: 'ai_cost_log' },\n  { id: 'KSlnbA33PRbFDLne', name: 'credential_expiry' },\n  { id: 'wCfdPfENLbe1jvc2', name: 'credential_health' },\n  { id: 'FsTInkNFnck4KNrp', name: 'rate_limit_counters' }\n];\n\nconst date = new Date().toISOString().split('T')[0];\nconst timestamp = new Date().toISOString();\nconst allData = {};\n\nfor (const table of TABLES) {\n  let allRows = [];\n  let cursor = '';\n  let hasMore = true;\n  let pageCount = 0;\n  \n  while (hasMore && pageCount < 20) {\n    pageCount++;\n    try {\n      const url = `${N8N_BASE}/data-tables/${table.id}/rows?limit=250${cursor ? '&cursor=' + cursor : ''}`;\n      const resp = await this.helpers.httpRequest({\n        method: 'GET',\n        url,\n        headers: { 'X-N8N-API-KEY': API_KEY },\n        json: true\n      });\n      allRows = allRows.concat(resp.data || []);\n      cursor = resp.nextCursor || '';\n      hasMore = !!resp.nextCursor && resp.data && resp.data.length > 0;\n    } catch (e) {\n      allRows = [{ error: e.message }];\n      hasMore = false;\n    }\n  }\n  \n  allData[table.name] = {\n    table_id: table.id,\n    row_count: allRows.length,\n    rows: allRows\n  };\n}\n\nconst files = [\n  {\n    path: `backups/datatables/datatables-${date}.json`,\n    content: JSON.stringify({ timestamp, tables: Object.keys(allData).length, data: allData }, null, 2),\n    message: `DataTable backup ${date} — ${Object.entries(allData).map(([k,v]) => `${k}:${v.row_count}`).join(', ')}`\n  },\n  {\n    path: 'backups/datatables/latest.json',\n    content: JSON.stringify({ timestamp, tables: Object.keys(allData).length, data: allData }, null, 2),\n    message: `Update latest DataTable backup — ${date}`\n  }\n];\n\nreturn files.map(f => ({ json: {\n  path: f.path,\n  message: f.message,\n  content_b64: Buffer.from(f.content).toString('base64')\n}}));"
+        },
+        "id": "5f88001d-6417-41c0-a794-2fbe7e0d093e"
+      },
+      {
+        "name": "Process One File",
+        "type": "n8n-nodes-base.splitInBatches",
+        "typeVersion": 3,
+        "position": [
+          480,
+          400
+        ],
+        "parameters": {
+          "batchSize": 1,
+          "options": {}
+        },
+        "id": "0a0db2ab-55f3-4218-a248-a9c25abc895d"
+      },
+      {
+        "name": "Get File SHA",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          720,
+          400
+        ],
+        "credentials": {
+          "githubApi": {
+            "id": "P5dXGKMH1H5qsTkU",
+            "name": "GitHub - n8n Gateway Backup"
+          }
+        },
+        "parameters": {
+          "method": "GET",
+          "url": "=https://api.github.com/repos/mishaal-cloud/n8n-gateway-v1-stable/contents/{{ $json.path }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "githubApi",
+          "options": {
+            "response": {
+              "response": {
+                "neverError": true
+              }
+            }
+          }
+        },
+        "id": "9fae7fa0-347b-4a84-8892-1b78a4ce2530"
+      },
+      {
+        "name": "Build Body",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          960,
+          400
+        ],
+        "parameters": {
+          "mode": "runOnceForEachItem",
+          "jsCode": "\n// Build GitHub PUT body — all data carried in the item, no cross-node references\nconst shaResp = $input.item.json;\nconst sha = shaResp && shaResp.sha ? shaResp.sha : null;\n\n// Get the original file data from the SplitInBatches context\nconst batchItem = $('Process One File').item.json;\nconst path = batchItem.path;\nconst content_b64 = batchItem.content_b64;\nconst message = batchItem.message;\n\nconst body = { message, content: content_b64 };\nif (sha) body.sha = sha;\n\nreturn { json: { path, body } };\n"
+        },
+        "id": "e7272c6d-d2d6-482a-a9dc-63390685b061"
+      },
+      {
+        "name": "Push to GitHub",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1200,
+          400
+        ],
+        "credentials": {
+          "githubApi": {
+            "id": "P5dXGKMH1H5qsTkU",
+            "name": "GitHub - n8n Gateway Backup"
+          }
+        },
+        "parameters": {
+          "method": "PUT",
+          "url": "=https://api.github.com/repos/mishaal-cloud/n8n-gateway-v1-stable/contents/{{ $json.path }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "githubApi",
+          "sendBody": true,
+          "contentType": "raw",
+          "rawContentType": "application/json",
+          "body": "={{ JSON.stringify($json.body) }}"
+        },
+        "id": "f9629167-96e8-4ea7-9804-02e096ffa794"
+      }
+    ],
+    "connections": {
+      "Daily Schedule": {
+        "main": [
+          [
+            {
+              "node": "Export DataTables",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "On-Demand Trigger": {
+        "main": [
+          [
+            {
+              "node": "Export DataTables",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Export DataTables": {
+        "main": [
+          [
+            {
+              "node": "Process One File",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Process One File": {
+        "main": [
+          [
+            {
+              "node": "Get File SHA",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          []
+        ]
+      },
+      "Get File SHA": {
+        "main": [
+          [
+            {
+              "node": "Build Body",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Body": {
+        "main": [
+          [
+            {
+              "node": "Push to GitHub",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Push to GitHub": {
+        "main": [
+          [
+            {
+              "node": "Process One File",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "callerPolicy": "workflowsFromSameOwner",
+      "availableInMCP": false,
+      "errorWorkflow": "hOWUA7bAQb8Apwd0"
+    }
+  }
+}
