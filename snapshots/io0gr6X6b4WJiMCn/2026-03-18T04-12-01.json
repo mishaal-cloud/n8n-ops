@@ -1,0 +1,182 @@
+{
+  "snapshot_at": "2026-03-18T04:12:01.774Z",
+  "reason": "Pre-modification snapshot: Testing safe_modify_workflow - no-op name change to verify snapshot + log + notify pipeline",
+  "session_id": "cowork-2026-03-18-test",
+  "workflow": {
+    "name": "Infrastructure: Health Check (Lightweight)",
+    "id": "io0gr6X6b4WJiMCn",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {
+          "httpMethod": "GET",
+          "path": "health-check",
+          "responseMode": "responseNode",
+          "options": {}
+        },
+        "id": "e5f6a7b8-5001-4e01-b005-000000000001",
+        "name": "Webhook",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2,
+        "position": [
+          250,
+          300
+        ],
+        "webhookId": "health-check-endpoint"
+      },
+      {
+        "parameters": {
+          "jsCode": "const apis = [\n  { name: 'google_ads', url: 'https://googleads.googleapis.com/$discovery/rest', method: 'GET' },\n  { name: 'hubspot', url: 'https://api.hubspot.com/health', method: 'GET' },\n  { name: 'salesforce', url: 'https://login.salesforce.com/.well-known/openid-configuration', method: 'GET' },\n  { name: 'ga4', url: 'https://analyticsdata.googleapis.com/$discovery/rest', method: 'GET' }\n];\n\nreturn apis.map(api => ({ json: api }));"
+        },
+        "id": "e5f6a7b8-5001-4e01-b005-000000000002",
+        "name": "Check APIs",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          480,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "batchSize": 1,
+          "options": {}
+        },
+        "id": "e5f6a7b8-5001-4e01-b005-000000000003",
+        "name": "Split In Batches",
+        "type": "n8n-nodes-base.splitInBatches",
+        "typeVersion": 3,
+        "position": [
+          710,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "method": "GET",
+          "url": "={{ $json.url }}",
+          "options": {
+            "timeout": 10000
+          }
+        },
+        "id": "e5f6a7b8-5001-4e01-b005-000000000004",
+        "name": "Ping API",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          940,
+          400
+        ],
+        "onError": "continueRegularOutput"
+      },
+      {
+        "parameters": {
+          "jsCode": "const results = $input.all().map(item => ({\n  api: item.json.name || 'unknown',\n  status: item.json.error ? 'unhealthy' : 'healthy',\n  response_time_ms: item.json.response_time || 0,\n  checked_at: new Date().toISOString()\n}));\n\nconst allHealthy = results.every(r => r.status === 'healthy');\n\nreturn [{\n  json: {\n    overall_status: allHealthy ? 'healthy' : 'degraded',\n    health_report: results,\n    checked_at: new Date().toISOString(),\n    total_apis: results.length,\n    healthy_count: results.filter(r => r.status === 'healthy').length,\n    unhealthy_count: results.filter(r => r.status === 'unhealthy').length\n  }\n}];"
+        },
+        "id": "e5f6a7b8-5001-4e01-b005-000000000005",
+        "name": "Aggregate Results",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1170,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ $json }}",
+          "options": {
+            "responseCode": 200,
+            "responseHeaders": {
+              "entries": [
+                {
+                  "name": "Content-Type",
+                  "value": "application/json"
+                }
+              ]
+            }
+          }
+        },
+        "id": "e5f6a7b8-5001-4e01-b005-000000000006",
+        "name": "Respond to Webhook",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.1,
+        "position": [
+          1400,
+          300
+        ]
+      }
+    ],
+    "connections": {
+      "Webhook": {
+        "main": [
+          [
+            {
+              "node": "Check APIs",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Check APIs": {
+        "main": [
+          [
+            {
+              "node": "Split In Batches",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Split In Batches": {
+        "main": [
+          [
+            {
+              "node": "Aggregate Results",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Ping API",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Ping API": {
+        "main": [
+          [
+            {
+              "node": "Split In Batches",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Aggregate Results": {
+        "main": [
+          [
+            {
+              "node": "Respond to Webhook",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "callerPolicy": "workflowsFromSameOwner",
+      "availableInMCP": false,
+      "errorWorkflow": "hOWUA7bAQb8Apwd0"
+    }
+  }
+}
