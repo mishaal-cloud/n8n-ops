@@ -1,0 +1,117 @@
+{
+  "snapshot_at": "2026-03-18T04:54:17.575Z",
+  "reason": "Pre-modification snapshot: Fix drift detector false positive: scan pattern now derived from $vars.N8N_HOST instead of hardcoded string",
+  "session_id": "cowork-2026-03-18",
+  "workflow": {
+    "name": "Monitor: Daily Drift Detector",
+    "id": "47iqwAKXzGrS4d1n",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "cronExpression",
+                "expression": "0 8 * * *"
+              }
+            ]
+          }
+        },
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.3,
+        "position": [
+          0,
+          0
+        ],
+        "id": "drift-trigger",
+        "name": "Daily 3am CT"
+      },
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "drift-check",
+          "responseMode": "responseNode",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2,
+        "position": [
+          0,
+          200
+        ],
+        "id": "drift-webhook",
+        "name": "On-Demand Trigger",
+        "webhookId": "drift-check-001"
+      },
+      {
+        "parameters": {
+          "jsCode": "// Daily Drift Detector (ADR-001 Phase 3)\n// Checks for configuration drift across the platform\nconst N8N_HOST = $vars.N8N_HOST;\nconst API_KEY = $vars.N8N_INTERNAL_API_KEY;\nconst drifts = [];\nconst timestamp = new Date().toISOString();\n\n// === CHECK 1: Registry client coverage ===\n// Every handler-type domain should have client=all\nconst REG_TABLE = $vars.REGISTRY_V2_API_TABLE_ID;\ntry {\n  const regResp = await this.helpers.httpRequest({\n    method: 'GET', url: N8N_HOST + '/api/v1/data-tables/' + REG_TABLE + '/rows?limit=250',\n    headers: {'X-N8N-API-KEY': API_KEY}, json: true\n  });\n  const rows = regResp.data || [];\n  // Group by domain, find latest entry per domain\n  const latest = {};\n  for (const row of rows) {\n    const d = row.api_name;\n    if (!latest[d] || row.id > latest[d].id) latest[d] = row;\n  }\n  // Check each domain has client=all or is intentionally client-specific\n  for (const [domain, row] of Object.entries(latest)) {\n    if (row.client !== 'all' && row.enabled) {\n      drifts.push({\n        check: 'registry_client_coverage',\n        severity: 'warning',\n        domain: domain,\n        message: 'Registry entry has client=' + row.client + ' instead of client=all. May block other clients.',\n        row_id: row.id\n      });\n    }\n    // Check handler-type entries have handler_workflow_id\n    if (row.handler_workflow_id === '' || row.handler_workflow_id === null) {\n      // Check if this domain has handler-type actions\n      const ACT_TABLE = $vars.REGISTRY_V2_ACTION_TABLE_ID;\n      try {\n        const actResp = await this.helpers.httpRequest({\n          method: 'GET', url: N8N_HOST + '/api/v1/data-tables/' + ACT_TABLE + '/rows?limit=250',\n          headers: {'X-N8N-API-KEY': API_KEY}, json: true\n        });\n        const handlerActions = (actResp.data || []).filter(a => a.api_name === domain && a.body_mode === 'handler' && a.enabled);\n        if (handlerActions.length > 0) {\n          drifts.push({\n            check: 'missing_handler',\n            severity: 'critical',\n            domain: domain,\n            message: domain + ' has ' + handlerActions.length + ' handler-type actions but no handler_workflow_id in registry.',\n            row_id: row.id\n          });\n        }\n      } catch(e) {}\n    }\n  }\n} catch(e) {\n  drifts.push({check: 'registry_read', severity: 'critical', domain: 'platform', message: 'Could not read registry: ' + e.message});\n}\n\n// === CHECK 2: Hardcoded URL scan ===\ntry {\n  const wfResp = await this.helpers.httpRequest({\n    method: 'GET', url: N8N_HOST + '/api/v1/workflows?limit=200',\n    headers: {'X-N8N-API-KEY': API_KEY}, json: true\n  });\n  for (const wf of (wfResp.data || [])) {\n    for (const node of (wf.nodes || [])) {\n      if (node.type === 'n8n-nodes-base.code') {\n        const code = (node.parameters || {}).jsCode || '';\n        if (code.includes('mmurawala.app.n8n.cloud')) {\n          drifts.push({\n            check: 'hardcoded_url',\n            severity: 'critical',\n            domain: wf.name,\n            message: 'Hardcoded URL in node \"' + node.name + '\" of workflow ' + wf.id\n          });\n        }\n      }\n    }\n  }\n} catch(e) {\n  drifts.push({check: 'workflow_scan', severity: 'warning', domain: 'platform', message: 'Could not scan workflows: ' + e.message});\n}\n\n// === CHECK 3: Credential health staleness ===\nconst HEALTH_TABLE = $vars.CREDENTIAL_HEALTH_TABLE_ID;\ntry {\n  const healthResp = await this.helpers.httpRequest({\n    method: 'GET', url: N8N_HOST + '/api/v1/data-tables/' + HEALTH_TABLE + '/rows?limit=250',\n    headers: {'X-N8N-API-KEY': API_KEY}, json: true\n  });\n  const rows = healthResp.data || [];\n  const latest = {};\n  for (const row of rows) {\n    if (!latest[row.domain] || row.id > latest[row.domain].id) latest[row.domain] = row;\n  }\n  const now = new Date();\n  for (const [domain, row] of Object.entries(latest)) {\n    if (row.last_checked_at) {\n      const checked = new Date(row.last_checked_at);\n      const daysSince = (now - checked) / (1000 * 60 * 60 * 24);\n      if (daysSince > 7) {\n        drifts.push({\n          check: 'stale_health',\n          severity: 'warning',\n          domain: domain,\n          message: 'Health data is ' + Math.floor(daysSince) + ' days old. Last checked: ' + row.last_checked_at\n        });\n      }\n    }\n  }\n} catch(e) {}\n\n// === BUILD REPORT ===\nconst critical = drifts.filter(d => d.severity === 'critical');\nconst warnings = drifts.filter(d => d.severity === 'warning');\n\nconst report = {\n  timestamp,\n  total_drifts: drifts.length,\n  critical_count: critical.length,\n  warning_count: warnings.length,\n  drifts: drifts\n};\n\n// Alert to Slack if any critical drifts\nif (critical.length > 0) {\n  try {\n    const slackUrl = N8N_HOST + '/webhook/handler-google-suite';\n    const secret = $vars.GW_HANDLER_INTERNAL_SECRET;\n    const alertLines = critical.map(d => '• *' + d.domain + '*: ' + d.message).join('\\n');\n    await this.helpers.httpRequest({\n      method: 'POST', url: slackUrl,\n      headers: {'x-handler-secret': secret, 'Content-Type': 'application/json'},\n      body: JSON.stringify({\n        domain: 'slack', action: 'post_message', client: 'ascend',\n        params: {\n          channel: '#n8n-alerts',\n          text: ':warning: *Daily Drift Detector — ' + critical.length + ' critical drift(s) found*\\n' + alertLines + '\\n\\nRun `get_platform_context` for details.'\n        }\n      })\n    });\n    report.slack_alerted = true;\n  } catch(e) {\n    report.slack_alerted = false;\n    report.slack_error = e.message;\n  }\n}\n\n// Log to changelog\nconst CHANGELOG_TABLE = $vars.PLATFORM_CHANGELOG_TABLE_ID;\nif (CHANGELOG_TABLE) {\n  try {\n    await this.helpers.httpRequest({\n      method: 'POST', url: N8N_HOST + '/api/v1/data-tables/' + CHANGELOG_TABLE + '/rows',\n      headers: {'X-N8N-API-KEY': API_KEY, 'Content-Type': 'application/json'},\n      body: JSON.stringify({data: [{\n        timestamp, category: 'drift_check', domain: 'platform',\n        summary: 'Daily drift check: ' + critical.length + ' critical, ' + warnings.length + ' warnings',\n        details: JSON.stringify(drifts.slice(0, 10)),\n        session_id: 'drift-detector'\n      }]})\n    });\n  } catch(e) {}\n}\n\nreturn [{json: report}];\n"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          300,
+          100
+        ],
+        "id": "drift-check",
+        "name": "Run Drift Checks"
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ JSON.stringify($json) }}",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.1,
+        "position": [
+          550,
+          200
+        ],
+        "id": "drift-respond",
+        "name": "Respond"
+      }
+    ],
+    "connections": {
+      "Daily 3am CT": {
+        "main": [
+          [
+            {
+              "node": "Run Drift Checks",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "On-Demand Trigger": {
+        "main": [
+          [
+            {
+              "node": "Run Drift Checks",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Run Drift Checks": {
+        "main": [
+          [
+            {
+              "node": "Respond",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "callerPolicy": "workflowsFromSameOwner",
+      "availableInMCP": false
+    }
+  }
+}
