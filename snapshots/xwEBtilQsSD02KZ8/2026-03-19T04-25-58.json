@@ -1,0 +1,29 @@
+{
+  "snapshot_at": "2026-03-19T04:25:58.582Z",
+  "reason": "Pre-modification snapshot: No reason provided",
+  "session_id": "cowork-stream3-2026-03-19",
+  "workflow": {
+    "name": "Platform — Monthly Backup Check",
+    "id": "xwEBtilQsSD02KZ8",
+    "active": false,
+    "nodes": [
+      {
+        "parameters": {},
+        "id": "t1",
+        "name": "Trigger",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1,
+        "position": [
+          250,
+          300
+        ]
+      }
+    ],
+    "connections": {},
+    "settings": {
+      "executionOrder": "v1",
+      "callerPolicy": "workflowsFromSameOwner",
+      "availableInMCP": false
+    }
+  }
+}
