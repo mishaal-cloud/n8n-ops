@@ -1,0 +1,1290 @@
+{
+  "snapshot_at": "2026-03-19T02:46:55.114Z",
+  "reason": "Pre-code_patch: Add calendars and free_busy endpoints to Google Calendar handler",
+  "session_id": "cowork-2026-03-19-session2",
+  "workflow": {
+    "name": "Gateway: Google Suite",
+    "id": "RKoOuaqcnbSYfLLp",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {},
+        "id": "c7d4e5f6-4001-4b8c-ad0e-4f5a6b7c8d9e",
+        "name": "Execute Workflow Trigger",
+        "type": "n8n-nodes-base.executeWorkflowTrigger",
+        "typeVersion": 1,
+        "position": [
+          0,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const input = $input.first().json;\nconst rawApi = input.api || input.domain;\nconst action = input.action;\nconst params = input.params || {};\n\n// Domain alias mapping\nconst aliasMap = {google_calendar:'calendar',google_drive:'drive',google_sheets:'sheets',google_docs:'docs',google_slides:'slides'};\nconst api = aliasMap[rawApi] || rawApi;\n\nconst apiConfigs = {\n  wordpress: {\n    base_url: params.siteUrl ? (params.siteUrl + (params.siteUrl.endsWith('/wp-json') ? '' : '/wp-json')) : 'https://kahunaworkforce.com/wp-json',\n    endpoints: {\n      posts: { method: 'GET', path: '/wp/v2/posts', query: { per_page: params.per_page || 10, page: params.page || 1, status: params.status || 'publish', search: params.search || '' } },\n      get_post: { method: 'GET', path: '/wp/v2/posts/' + (params.id || params.post_id || '{id}'), query: {} },\n      create_post: { method: 'POST', path: '/wp/v2/posts', body: { title: params.title || '', content: params.content || '', status: params.status || 'draft', categories: params.categories || [] } },\n      update_post: { method: 'PUT', path: '/wp/v2/posts/' + (params.id || params.post_id || '{id}'), body: params },\n      delete_post: { method: 'DELETE', path: '/wp/v2/posts/' + (params.id || params.post_id || '{id}'), query: { force: params.force || false } },\n      pages: { method: 'GET', path: '/wp/v2/pages', query: { per_page: params.per_page || 10, page: params.page || 1, status: params.status || 'publish' } },\n      categories: { method: 'GET', path: '/wp/v2/categories', query: { per_page: params.per_page || 100 } },\n      media: { method: 'GET', path: '/wp/v2/media', query: { per_page: params.per_page || 20, media_type: params.media_type || '' } }\n    }\n  },\n  gmail: {\n    base_url: 'https://gmail.googleapis.com/gmail/v1',\n    endpoints: {\n      list: { method: 'GET', path: '/users/me/messages', query: { maxResults: params.max_results || 20, q: params.query || '' } },\n      read: { method: 'GET', path: `/users/me/messages/${params.message_id || '{message_id}'}`, query: { format: params.format || 'full' } },\n      send: { method: 'POST', path: '/users/me/messages/send', body: { raw: Buffer.from(`To: ${params.to || ''}\\r\\nSubject: ${params.subject || ''}\\r\\nContent-Type: text/html; charset=utf-8\\r\\n\\r\\n${params.body || ''}`).toString('base64url') } },\n      search: { method: 'GET', path: '/users/me/messages', query: { maxResults: params.max_results || 50, q: params.query || '' } },\n      draft: { method: 'POST', path: '/users/me/drafts', body: { message: { raw: Buffer.from(`To: ${params.to || ''}\\r\\nSubject: ${params.subject || ''}\\r\\nContent-Type: text/html; charset=utf-8\\r\\n\\r\\n${params.body || ''}`).toString('base64url') } } },\n      labels: { method: 'GET', path: '/users/me/labels', query: {} },\n      reply: { method: 'POST', path: '/users/me/messages/send', body: { raw: Buffer.from(`To: ${params.to || ''}\\r\\nSubject: Re: ${params.subject || ''}\\r\\nIn-Reply-To: ${params.in_reply_to || ''}\\r\\nReferences: ${params.references || params.in_reply_to || ''}\\r\\nContent-Type: text/html; charset=utf-8\\r\\n\\r\\n${params.body || ''}`).toString('base64url'), threadId: params.thread_id || '' } },\n      trash: { method: 'POST', path: `/users/me/messages/${params.message_id || '{message_id}'}/trash`, body: {} }\n    }\n  },\n  calendar: {\n    base_url: 'https://www.googleapis.com/calendar/v3',\n    endpoints: {\n      list: { method: 'GET', path: `/calendars/${encodeURIComponent(params.calendar_id || 'primary')}/events`, query: { timeMin: params.time_min || new Date().toISOString(), timeMax: params.time_max || new Date(Date.now()+7*86400000).toISOString(), maxResults: params.max_results || 50, singleEvents: true, orderBy: 'startTime' } },\n      get: { method: 'GET', path: `/calendars/${encodeURIComponent(params.calendar_id || 'primary')}/events/${params.event_id || '{event_id}'}`, query: {} },\n      create: { method: 'POST', path: `/calendars/${encodeURIComponent(params.calendar_id || 'primary')}/events`, body: { summary: params.summary || '', description: params.description || '', start: { dateTime: params.start, timeZone: params.timezone || 'America/Chicago' }, end: { dateTime: params.end, timeZone: params.timezone || 'America/Chicago' }, attendees: (params.attendees || []).map(e => ({email:e})) } },\n      update: { method: 'PATCH', path: `/calendars/${encodeURIComponent(params.calendar_id || 'primary')}/events/${params.event_id || '{event_id}'}`, body: params.update || {} },\n      delete: { method: 'DELETE', path: `/calendars/${encodeURIComponent(params.calendar_id || 'primary')}/events/${params.event_id || '{event_id}'}`, body: {} }\n    }\n  },\n  drive: {\n    base_url: 'https://www.googleapis.com/drive/v3',\n    endpoints: {\n      list: { method: 'GET', path: '/files', query: { q: params.folder_id ? `'${params.folder_id}' in parents and trashed=false` : 'trashed=false', pageSize: params.max_results || 100, fields: 'nextPageToken,files(id,name,mimeType,size,modifiedTime,webViewLink,parents)', orderBy: 'modifiedTime desc' } },\n      get: { method: 'GET', path: `/files/${params.file_id || '{file_id}'}`, query: { fields: 'id,name,mimeType,size,modifiedTime,webViewLink,description,parents,permissions' } },\n      search: { method: 'GET', path: '/files', query: { q: `name contains '${params.query || ''}' and trashed=false`, pageSize: params.max_results || 50, fields: 'nextPageToken,files(id,name,mimeType,size,modifiedTime,webViewLink)', orderBy: 'modifiedTime desc' } },\n      create: { method: 'POST', path: '/files', body: { name: params.name || 'Untitled', mimeType: params.mime_type || 'application/vnd.google-apps.document', parents: params.folder_id ? [params.folder_id] : [] } },\n  copy: { method: 'POST', path: `/files/${params.file_id || '{file_id}'}/copy`, body: { name: params.name || undefined, parents: params.folder_id ? [params.folder_id] : undefined } },\n      move: { method: 'PATCH', path: `/files/${params.file_id || '{file_id}'}`, query: { addParents: params.target_folder_id || '', removeParents: params.source_folder_id || '' }, body: {} },\n      delete: { method: 'PATCH', path: `/files/${params.file_id || '{file_id}'}`, body: { trashed: true } },\n      download: { method: 'GET', path: `/files/${params.file_id || '{file_id}'}`, query: { alt: 'media' } }\n    }\n  },\n  sheets: {\n    base_url: 'https://sheets.googleapis.com/v4',\n    endpoints: {\n      list: { method: 'GET', path: `/spreadsheets/${params.spreadsheet_id || '{spreadsheet_id}'}`, query: { fields: 'spreadsheetId,properties.title,sheets.properties' } },\n      read: { method: 'GET', path: `/spreadsheets/${params.spreadsheet_id || '{spreadsheet_id}'}/values/${encodeURIComponent(params.range || 'Sheet1')}`, query: { valueRenderOption: params.render_option || 'FORMATTED_VALUE' } },\n      write: { method: 'PUT', path: `/spreadsheets/${params.spreadsheet_id || '{spreadsheet_id}'}/values/${encodeURIComponent(params.range || 'Sheet1')}`, query: { valueInputOption: params.input_option || 'USER_ENTERED' }, body: { range: params.range || 'Sheet1', majorDimension: 'ROWS', values: params.values || [] } },\n      append: { method: 'POST', path: `/spreadsheets/${params.spreadsheet_id || '{spreadsheet_id}'}/values/${encodeURIComponent(params.range || 'Sheet1')}:append`, query: { valueInputOption: params.input_option || 'USER_ENTERED', insertDataOption: 'INSERT_ROWS' }, body: { values: params.values || [] } },\n      clear: { method: 'POST', path: `/spreadsheets/${params.spreadsheet_id || '{spreadsheet_id}'}/values/${encodeURIComponent(params.range || 'Sheet1')}:clear`, body: {} },\n      create: { method: 'POST', path: '/spreadsheets', body: { properties: { title: params.title || 'New Spreadsheet' }, sheets: [{ properties: { title: params.sheet_name || 'Sheet1' } }] } }\n    }\n  },\n  docs: {\n    base_url: 'https://docs.googleapis.com/v1',\n    endpoints: {\n      get: { method: 'GET', path: `/documents/${params.document_id || '{document_id}'}`, query: {} },\n      create: { method: 'POST', path: '/documents', body: { title: params.title || 'Untitled Document' } },\n      append: { method: 'POST', path: `/documents/${params.document_id || '{document_id}'}:batchUpdate`, body: { requests: [{ insertText: { location: { index: params.index || 1 }, text: params.text || '' } }] } }\n    }\n  },\n  slides: {\n    base_url: 'https://slides.googleapis.com/v1',\n    endpoints: {\n      get: { method: 'GET', path: `/presentations/${params.presentation_id || '{presentation_id}'}`, query: {} },\n      create: { method: 'POST', path: '/presentations', body: { title: params.title || 'Untitled Presentation' } }\n    }\n  },\n  slack: {\n    base_url: 'https://slack.com/api',\n    endpoints: {\n      list_channels: { method: 'GET', path: '/conversations.list', query: { types: params.types || 'public_channel,private_channel', limit: params.limit || 200 } },\n      send: { method: 'POST', path: '/chat.postMessage', body: { channel: params.channel || '{channel}', text: params.text || '', blocks: params.blocks || undefined } },\n      search: { method: 'GET', path: '/search.messages', query: { query: params.query || '', count: params.limit || 20 } },\n      read_channel: { method: 'GET', path: '/conversations.history', query: { channel: params.channel || '{channel}', limit: params.limit || 50 } },\n      read_thread: { method: 'GET', path: '/conversations.replies', query: { channel: params.channel || '{channel}', ts: params.ts || params.thread_ts || '{ts}', limit: params.limit || 50 } },\n      list_users: { method: 'GET', path: '/users.list', query: { limit: params.limit || 200 } },\n      reactions_add: { method: 'POST', path: '/reactions.add', body: { channel: params.channel || '{channel}', name: params.name || '{emoji}', timestamp: params.timestamp || params.ts || '{ts}' } },\n      upload_file: { method: 'POST', path: '/files.uploadV2', body: { channel_id: params.channel_id || params.channel || '{channel}', content: params.content || '', filename: params.filename || 'file.txt', title: params.title || '' } }\n    }\n  },\n  notion: {\n    base_url: 'https://api.notion.com/v1',\n    endpoints: {\n      search: { method: 'POST', path: '/search', body: { query: params.query || '', page_size: params.limit || 10 } },\n      get_page: { method: 'GET', path: `/pages/${params.page_id || '{page_id}'}`, query: {} },\n      create_page: { method: 'POST', path: '/pages', body: params.page || { parent: { database_id: params.database_id || params.data_source_id || '{database_id}' }, properties: params.properties || {}, ...(params.markdown ? { markdown: params.markdown } : {}) } },\n      update_page: { method: 'PATCH', path: `/pages/${params.page_id || '{page_id}'}`, body: { properties: params.properties || {} } },\n      query_database: { method: 'POST', path: `/databases/${params.database_id || params.data_source_id || '{database_id}'}/query`, body: { filter: params.filter || undefined, sorts: params.sorts || undefined, page_size: params.limit || 100 } },\n      get_database: { method: 'GET', path: `/databases/${params.database_id || params.data_source_id || '{database_id}'}`, query: {} },\n      create_database: { method: 'POST', path: '/databases', body: { parent: params.parent || { page_id: params.page_id || '{page_id}' }, title: params.title || [], properties: params.properties || {} } },\n      get_block_children: { method: 'GET', path: `/blocks/${params.block_id || '{block_id}'}/children`, query: { page_size: params.limit || 100 } },\n      get_markdown: { method: 'GET', path: `/pages/${params.page_id || '{page_id}'}/markdown`, query: {} },\n      update_markdown: { method: 'PATCH', path: `/pages/${params.page_id || '{page_id}'}/markdown`, body: { markdown: params.markdown || '' } },\n      create_page_markdown: { method: 'POST', path: '/pages', body: { parent: { database_id: params.database_id || params.data_source_id || '{database_id}' }, properties: params.properties || {}, markdown: params.markdown || '' } },\n      query_data_source: { method: 'POST', path: `/data_sources/${params.data_source_id || '{data_source_id}'}/query`, body: { filter: params.filter || undefined, sorts: params.sorts || undefined, page_size: params.limit || 100 } },\n      get_data_source: { method: 'GET', path: `/data_sources/${params.data_source_id || '{data_source_id}'}`, query: {} },\n      create_data_source: { method: 'POST', path: '/data_sources', body: { parent: params.parent || {}, properties: params.properties || {} } },\n      list_templates: { method: 'GET', path: `/data_sources/${params.data_source_id || '{data_source_id}'}/templates`, query: {} }\n    }\n  },\n\n  youtube: {\n    base_url: 'https://www.googleapis.com/youtube/v3',\n    endpoints: {\n      search: { method: 'GET', path: '/search', query: { part: 'snippet', q: params.query || '', maxResults: params.limit || 10, type: params.type || 'video' } },\n      channel_stats: { method: 'GET', path: '/channels', query: { part: 'snippet,statistics', id: params.channel_id || undefined, mine: params.channel_id ? undefined : 'true' } },\n      video_stats: { method: 'GET', path: '/videos', query: { part: 'snippet,statistics', id: params.video_id || '{video_id}' } },\n      playlists: { method: 'GET', path: '/playlists', query: { part: 'snippet,contentDetails', channelId: params.channel_id || undefined, mine: params.channel_id ? undefined : 'true', maxResults: params.limit || 10 } }\n    }\n  },\n  linkedin: {\n    base_url: 'https://api.linkedin.com',\n    endpoints: {\n      profile: { method: 'GET', path: '/v2/userinfo', query: {} },\n      create_post: { method: 'POST', path: '/v2/ugcPosts', body: params.post_body || { author: params.author_urn, lifecycleState: 'PUBLISHED', specificContent: { 'com.linkedin.ugc.ShareContent': { shareCommentary: { text: params.text || '' }, shareMediaCategory: 'NONE' } }, visibility: { 'com.linkedin.ugc.MemberNetworkVisibility': params.visibility || 'PUBLIC' } } }\n    }\n  },\n  twitter: {\n    base_url: 'https://api.twitter.com/2',\n    endpoints: {\n      search: { method: 'GET', path: '/tweets/search/recent', query: { query: params.query || '', max_results: params.limit || 10 } },\n      get_user: { method: 'GET', path: `/users/by/username/${params.username || '{username}'}`, query: { 'user.fields': 'description,public_metrics,created_at' } },\n      post: { method: 'POST', path: '/tweets', body: { text: params.text || '' } },\n      me: { method: 'GET', path: '/users/me', query: { 'user.fields': 'description,public_metrics,created_at' } }\n    }\n  },\n  google_my_business: {\n    base_url: 'https://mybusinessaccountmanagement.googleapis.com/v1',\n    endpoints: {\n      accounts: { method: 'GET', path: '/accounts', query: {} },\n      locations: { method: 'GET', path: `/accounts/${params.account_id || '{account_id}'}/locations`, query: { readMask: 'name,title,storefrontAddress,websiteUri' } },\n      reviews: { method: 'GET', path: `/${params.location_name || '{location_name}'}/reviews`, query: {} }\n    }\n  },\n  onedrive: {\n    base_url: 'https://graph.microsoft.com/v1.0',\n    endpoints: {\n      list_files: { method: 'GET', path: '/me/drive/root/children', query: { '$select': 'id,name,size,lastModifiedDateTime,webUrl' } },\n      get_file: { method: 'GET', path: `/me/drive/items/${params.item_id || '{item_id}'}`, query: {} },\n      search: { method: 'GET', path: `/me/drive/search(q='${params.query || ''}')`, query: { '$top': params.limit || 20 } },\n      create_folder: { method: 'POST', path: '/me/drive/root/children', body: { name: params.name || 'New Folder', folder: {}, '@microsoft.graph.conflictBehavior': 'rename' } },\n      upload: { method: 'PUT', path: `/me/drive/root:/${params.filename || '{filename}'}:/content`, body: params.content || '' }\n    }\n  },\n  excel: {\n    base_url: 'https://graph.microsoft.com/v1.0',\n    endpoints: {\n      list_workbooks: { method: 'GET', path: \"/me/drive/search(q='.xlsx')\", query: { '$top': params.limit || 20, '$select': 'id,name,lastModifiedDateTime,webUrl' } },\n      list_sheets: { method: 'GET', path: `/me/drive/items/${params.file_id || '{file_id}'}/workbook/worksheets`, query: {} },\n      read_range: { method: 'GET', path: `/me/drive/items/${params.file_id || '{file_id}'}/workbook/worksheets/${encodeURIComponent(params.sheet || 'Sheet1')}/range(address='${params.range || 'A1:Z100'}')`, query: {} },\n      write_range: { method: 'PATCH', path: `/me/drive/items/${params.file_id || '{file_id}'}/workbook/worksheets/${encodeURIComponent(params.sheet || 'Sheet1')}/range(address='${params.range || '{range}'}')`, body: { values: params.values || [] } },\n      list_tables: { method: 'GET', path: `/me/drive/items/${params.file_id || '{file_id}'}/workbook/tables`, query: {} }\n    }\n  },\n  todo: {\n    base_url: 'https://graph.microsoft.com/v1.0',\n    endpoints: {\n      list_lists: { method: 'GET', path: '/me/todo/lists', query: {} },\n      list_tasks: { method: 'GET', path: `/me/todo/lists/${params.list_id || '{list_id}'}/tasks`, query: {} },\n      create_task: { method: 'POST', path: `/me/todo/lists/${params.list_id || '{list_id}'}/tasks`, body: { title: params.title || '', importance: params.importance || 'normal' } },\n      complete_task: { method: 'PATCH', path: `/me/todo/lists/${params.list_id || '{list_id}'}/tasks/${params.task_id || '{task_id}'}`, body: { status: 'completed' } }\n    }\n  },\n  outlook: {\n    base_url: 'https://graph.microsoft.com/v1.0/me',\n    endpoints: {\n      list: { method: 'GET', path: '/messages', query: { '$top': params.limit || 20, '$orderby': 'receivedDateTime desc', '$select': 'id,subject,from,receivedDateTime,isRead,bodyPreview' } },\n      send: { method: 'POST', path: '/sendMail', body: { message: { subject: params.subject || '', body: { contentType: 'HTML', content: params.body || '' }, toRecipients: (params.to ? (Array.isArray(params.to) ? params.to : [params.to]) : []).map(e => ({emailAddress:{address:e}})) } } }\n    }\n  }\n};\n\nconst config = apiConfigs[api];\nif (!config) {\n  return [{ json: { error: true, message: `Unknown API: ${api}. Available: ${Object.keys(apiConfigs).join(', ')}` } }];\n}\n\nconst endpoint = config.endpoints[action];\nif (!endpoint) {\n  return [{ json: { error: true, message: `Unknown action '${action}' for ${api}. Available: ${Object.keys(config.endpoints).join(', ')}` } }];\n}\n\n// Build query string into URL (avoids empty query param bug in HTTP Request nodes)\nlet fullUrl = config.base_url + endpoint.path;\nconst queryObj = endpoint.query || {};\nconst qEntries = Object.entries(queryObj).filter(([k, v]) => k && v !== undefined && v !== null && v !== '');\nif (qEntries.length > 0) {\n  fullUrl += (fullUrl.includes('?') ? '&' : '?') + qEntries.map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(v)).join('&');\n}\n\nreturn [{\n  json: {\n    method: endpoint.method,\n    url: fullUrl,\n    query: {},\n    body: endpoint.body || {},\n    api: api,\n    action: action\n  }\n}];\n"
+        },
+        "id": "c7d4e5f6-4002-4b8c-ad0e-4f5a6b7c8d9e",
+        "name": "Build API Request",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          272,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const input = $input.first().json;\nconst request = $('Build API Request').first().json;\n\nif (input.error || input.statusCode >= 400) {\n  return [{\n    json: {\n      error: true,\n      api: request.api,\n      action: request.action,\n      status_code: input.statusCode || 500,\n      message: input.message || input.error || 'API call failed',\n      raw_error: input\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    success: true,\n    api: request.api,\n    action: request.action,\n    data: input.data || input.body || input,\n    metadata: {\n      timestamp: new Date().toISOString(),\n      execution_id: $execution.id\n    }\n  }\n}];"
+        },
+        "id": "c7d4e5f6-4004-4b8c-ad0e-4f5a6b7c8d9e",
+        "name": "Format Response",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1088,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "handler-google-suite",
+          "responseMode": "responseNode",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2,
+        "position": [
+          -208,
+          512
+        ],
+        "id": "7e0580dd-d081-4cff-8d06-3d786f609256",
+        "name": "Webhook Trigger",
+        "webhookId": "fc960dd4-2e11-497a-8b44-7242cc04d54d"
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ JSON.stringify($json) }}",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.1,
+        "position": [
+          1344,
+          512
+        ],
+        "id": "4afef3d1-b7cf-45fc-be5a-dfccf074facb",
+        "name": "Respond to Webhook"
+      },
+      {
+        "parameters": {
+          "jsCode": "// Normalize webhook input + verify internal auth\nconst input = $input.first().json;\nconst data = input.body || input;\n\n// Security: verify internal handler secret\nconst headers = input.headers || {};\nconst secret = headers['x-handler-secret'] || data._handler_secret || '';\nconst EXPECTED = $vars.GW_HANDLER_INTERNAL_SECRET;\n\nif (secret !== EXPECTED && headers['x-handler-secret'] !== EXPECTED) {\n  // Allow Execute Workflow Trigger calls (no headers) but block raw webhook calls without secret\n  const isWebhook = !!input.headers;\n  if (isWebhook) {\n    return [{ json: { error: true, message: 'Unauthorized handler call', status_code: 403 } }];\n  }\n}\n\n// Clean up internal field\nif (data._handler_secret) delete data._handler_secret;\nreturn [{ json: data }];"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          0,
+          512
+        ],
+        "id": "b56c41ce-7030-4684-9414-8571ccc3657d",
+        "name": "Normalize Input"
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "loose"
+            },
+            "conditions": [
+              {
+                "id": "131be249-9c1f-414d-9cbe-8f4fd5a92662",
+                "leftValue": "={{ $json.error }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "equals"
+                }
+              }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        },
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.2,
+        "position": [
+          208,
+          512
+        ],
+        "id": "07d1780d-6d28-4aca-a7ba-97560bce4cae",
+        "name": "Auth Gate"
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ JSON.stringify($json) }}",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.1,
+        "position": [
+          400,
+          656
+        ],
+        "id": "18aa1c92-c1c7-428d-adfb-0672902684f4",
+        "name": "Respond Error"
+      },
+      {
+        "parameters": {
+          "rules": {
+            "values": [
+              {
+                "conditions": {
+                  "options": {
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.api }}",
+                      "rightValue": "gmail",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "or"
+                },
+                "renameOutput": true,
+                "outputKey": "Gmail"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.api }}",
+                      "rightValue": "calendar",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "or"
+                },
+                "renameOutput": true,
+                "outputKey": "Calendar"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.api }}",
+                      "rightValue": "drive",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    },
+                    {
+                      "leftValue": "={{ $json.api }}",
+                      "rightValue": "docs",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    },
+                    {
+                      "leftValue": "={{ $json.api }}",
+                      "rightValue": "slides",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "or"
+                },
+                "renameOutput": true,
+                "outputKey": "Drive/Docs/Slides"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.api }}",
+                      "rightValue": "sheets",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "or"
+                },
+                "renameOutput": true,
+                "outputKey": "Sheets"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.api }}",
+                      "rightValue": "slack",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "or"
+                },
+                "renameOutput": true,
+                "outputKey": "Slack"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.api }}",
+                      "rightValue": "notion",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "or"
+                },
+                "renameOutput": true,
+                "outputKey": "Notion"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.api }}",
+                      "rightValue": "outlook",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "or"
+                },
+                "renameOutput": true,
+                "outputKey": "Microsoft"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.api }}",
+                      "rightValue": "youtube",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "YouTube"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.api }}",
+                      "rightValue": "linkedin",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "LinkedIn"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.api }}",
+                      "rightValue": "twitter",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "Twitter"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.api }}",
+                      "rightValue": "google_my_business",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "Google My Business"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.api }}",
+                      "rightValue": "onedrive",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "OneDrive"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.api }}",
+                      "rightValue": "excel",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "Excel"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.api }}",
+                      "rightValue": "todo",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "ToDo"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.api }}",
+                      "rightValue": "wordpress",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "or"
+                },
+                "renameOutput": true,
+                "outputKey": "WordPress"
+              }
+            ]
+          },
+          "options": {
+            "fallbackOutput": "extra"
+          }
+        },
+        "id": "d1a2b3c4-5001-4000-b000-000000000001",
+        "name": "Route by Domain",
+        "type": "n8n-nodes-base.switch",
+        "typeVersion": 3,
+        "position": [
+          528,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "method": "={{ $json.method }}",
+          "url": "={{ $json.url }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "slackOAuth2Api",
+          "sendQuery": true,
+          "specifyQuery": "json",
+          "jsonQuery": "={{ JSON.stringify($json.query) }}",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.body) }}",
+          "options": {
+            "response": {
+              "response": {}
+            }
+          }
+        },
+        "id": "d1a2b3c4-5003-4000-b000-000000000003",
+        "name": "Call Slack API",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          784,
+          256
+        ],
+        "credentials": {
+          "slackOAuth2Api": {
+            "id": "Td6a13CD9P2O5K2U",
+            "name": "SLACK_OAUTH_ACCOUNT"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "method": "={{ $json.method }}",
+          "url": "={{ $json.url }}",
+          "sendQuery": true,
+          "specifyQuery": "json",
+          "jsonQuery": "={{ JSON.stringify($json.query || {}) }}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Authorization",
+                "value": "={{ 'Bearer ' + $vars.NOTION_API_KEY }}"
+              },
+              {
+                "name": "Notion-Version",
+                "value": "2025-09-03"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.body || {}) }}",
+          "options": {
+            "response": {
+              "response": {
+                "neverError": true
+              }
+            }
+          }
+        },
+        "id": "d1a2b3c4-5004-4000-b000-000000000004",
+        "name": "Call Notion API",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          784,
+          464
+        ]
+      },
+      {
+        "parameters": {
+          "method": "={{ $json.method }}",
+          "url": "={{ $json.url }}",
+          "authentication": "predefinedCredentialType",
+          "sendQuery": true,
+          "specifyQuery": "json",
+          "jsonQuery": "={{ JSON.stringify($json.query) }}",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.body) }}",
+          "options": {
+            "response": {
+              "response": {
+                "fullResponse": false
+              }
+            }
+          },
+          "nodeCredentialType": "microsoftOutlookOAuth2Api"
+        },
+        "id": "d1a2b3c4-5005-4000-b000-000000000005",
+        "name": "Call Microsoft API",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          784,
+          656
+        ],
+        "credentials": {
+          "microsoftOutlookOAuth2Api": {
+            "id": "Lu7gp8pIUhM6b8G2",
+            "name": "MICROSOFT_OUTLOOK_OAUTH_ACCOUNT"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "method": "={{ $json.method }}",
+          "url": "={{ $json.url }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "gmailOAuth2",
+          "sendQuery": true,
+          "specifyQuery": "json",
+          "jsonQuery": "={{ JSON.stringify($json.query || {}) }}",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.body || {}) }}",
+          "options": {
+            "response": {
+              "response": {
+                "neverError": true
+              }
+            }
+          }
+        },
+        "id": "d1a2b3c4-6001-4000-b000-000000000001",
+        "name": "Call Gmail",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          784,
+          -96
+        ],
+        "credentials": {
+          "gmailOAuth2": {
+            "id": "0qXbdYRtwneXvwEO",
+            "name": "GMAIL_OAUTH_ACCOUNT"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "method": "={{ $json.method }}",
+          "url": "={{ $json.url }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "googleCalendarOAuth2Api",
+          "sendQuery": true,
+          "specifyQuery": "json",
+          "jsonQuery": "={{ JSON.stringify($json.query || {}) }}",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.body || {}) }}",
+          "options": {
+            "response": {
+              "response": {
+                "neverError": true
+              }
+            }
+          }
+        },
+        "id": "d1a2b3c4-6002-4000-b000-000000000002",
+        "name": "Call Calendar",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          784,
+          0
+        ],
+        "credentials": {
+          "googleCalendarOAuth2Api": {
+            "id": "YBOTpjWlWA1UhvaV",
+            "name": "GOOGLE_CALENDAR_OAUTH_ACCOUNT"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "method": "={{ $json.method }}",
+          "url": "={{ $json.url }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "googleDriveOAuth2Api",
+          "sendQuery": true,
+          "specifyQuery": "json",
+          "jsonQuery": "={{ JSON.stringify($json.query || {}) }}",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.body || {}) }}",
+          "options": {
+            "response": {
+              "response": {
+                "neverError": true
+              }
+            }
+          }
+        },
+        "id": "d1a2b3c4-6003-4000-b000-000000000003",
+        "name": "Call Drive/Docs/Slides",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          784,
+          112
+        ],
+        "credentials": {
+          "googleDriveOAuth2Api": {
+            "id": "me0efHK8BQXIMi8c",
+            "name": "Google Drive account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "method": "={{ $json.method }}",
+          "url": "={{ $json.url }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "googleSheetsOAuth2Api",
+          "sendQuery": true,
+          "specifyQuery": "json",
+          "jsonQuery": "={{ JSON.stringify($json.query || {}) }}",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.body || {}) }}",
+          "options": {
+            "response": {
+              "response": {
+                "neverError": true
+              }
+            }
+          }
+        },
+        "id": "d1a2b3c4-6004-4000-b000-000000000004",
+        "name": "Call Sheets",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          784,
+          208
+        ],
+        "credentials": {
+          "googleSheetsOAuth2Api": {
+            "id": "oUDxAs0PlSvP3n9e",
+            "name": "GOOGLE_SHEETS_OAUTH_ACCOUNT"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "method": "={{ $json.method }}",
+          "url": "={{ $json.url }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "youTubeOAuth2Api",
+          "sendQuery": false,
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.body || {}) }}",
+          "options": {
+            "response": {
+              "response": {
+                "neverError": true
+              }
+            }
+          }
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          800,
+          700
+        ],
+        "name": "Call YouTube",
+        "credentials": {
+          "youTubeOAuth2Api": {
+            "id": "53ZQcqJt7zddcm3P",
+            "name": "YOUTUBE_OAUTH_ACCOUNT"
+          }
+        },
+        "onError": "continueRegularOutput",
+        "id": "e409aecd-7798-44c5-aef6-d484aacb2f53"
+      },
+      {
+        "parameters": {
+          "method": "={{ $json.method }}",
+          "url": "={{ $json.url }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "linkedInCommunityManagementOAuth2Api",
+          "sendQuery": false,
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.body || {}) }}",
+          "options": {
+            "response": {
+              "response": {
+                "neverError": true
+              }
+            }
+          }
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          800,
+          860
+        ],
+        "name": "Call LinkedIn",
+        "credentials": {
+          "linkedInCommunityManagementOAuth2Api": {
+            "id": "hM6JaaSBePWuzl6y",
+            "name": "LINKEDIN_COMMUNITY_MGMT_OAUTH_ACCOUNT"
+          }
+        },
+        "onError": "continueRegularOutput",
+        "id": "72850d7a-75de-4f1e-9d29-5fd2fc8d755a"
+      },
+      {
+        "parameters": {
+          "method": "={{ $json.method }}",
+          "url": "={{ $json.url }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "twitterOAuth2Api",
+          "sendQuery": false,
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.body || {}) }}",
+          "options": {
+            "response": {
+              "response": {
+                "neverError": true
+              }
+            }
+          }
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          800,
+          1020
+        ],
+        "name": "Call Twitter",
+        "credentials": {
+          "twitterOAuth2Api": {
+            "id": "FYod7fcuSNLjMFT4",
+            "name": "X account"
+          }
+        },
+        "onError": "continueRegularOutput",
+        "id": "360a387a-ddba-429e-a853-a4ee878f6b5e"
+      },
+      {
+        "parameters": {
+          "method": "={{ $json.method }}",
+          "url": "={{ $json.url }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "googleOAuth2Api",
+          "sendQuery": false,
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.body || {}) }}",
+          "options": {
+            "response": {
+              "response": {
+                "neverError": true
+              }
+            }
+          }
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          800,
+          1180
+        ],
+        "name": "Call Google My Business",
+        "credentials": {
+          "googleOAuth2Api": {
+            "id": "BXxEFUS0VUus3vu3",
+            "name": "GOOGLE_MY_BUSINESS_OAUTH_ACCOUNT"
+          }
+        },
+        "onError": "continueRegularOutput",
+        "id": "2274dee3-5125-4a2e-894e-69569fa84128"
+      },
+      {
+        "parameters": {
+          "method": "={{ $json.method }}",
+          "url": "={{ $json.url }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "microsoftOAuth2Api",
+          "sendQuery": false,
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.body || {}) }}",
+          "options": {
+            "response": {
+              "response": {
+                "neverError": true
+              }
+            }
+          }
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          800,
+          1340
+        ],
+        "name": "Call Microsoft Graph",
+        "credentials": {
+          "microsoftOAuth2Api": {
+            "id": "z23FXnEJjnjbuInH",
+            "name": "N8N_ASCEND_GTM_INTEGRATION"
+          }
+        },
+        "onError": "continueRegularOutput",
+        "id": "7033533f-89eb-4d0b-bcf1-b365129bc434"
+      },
+      {
+        "parameters": {
+          "method": "={{ $json.method }}",
+          "url": "={{ $json.url }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "wordpressApi",
+          "sendQuery": true,
+          "specifyQuery": "json",
+          "jsonQuery": "={{ JSON.stringify($json.query || {}) }}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.body || {}) }}",
+          "options": {
+            "response": {
+              "response": {
+                "neverError": true
+              }
+            }
+          }
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          800,
+          1200
+        ],
+        "id": "wp-call-001",
+        "name": "Call WordPress",
+        "credentials": {
+          "wordpressApi": {
+            "id": "jIBRhrEDzCgVi5ru",
+            "name": "KAHUNA_WORDPRESS_API"
+          }
+        }
+      }
+    ],
+    "connections": {
+      "Execute Workflow Trigger": {
+        "main": [
+          [
+            {
+              "node": "Build API Request",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build API Request": {
+        "main": [
+          [
+            {
+              "node": "Route by Domain",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Route by Domain": {
+        "main": [
+          [
+            {
+              "node": "Call Gmail",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Calendar",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Drive/Docs/Slides",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Sheets",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Slack API",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Notion API",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Microsoft API",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call YouTube",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call LinkedIn",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Twitter",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Google My Business",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Microsoft Graph",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Microsoft Graph",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Microsoft Graph",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call WordPress",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Gmail": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Calendar": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Drive/Docs/Slides": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Sheets": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Slack API": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Notion API": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Microsoft API": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Format Response": {
+        "main": [
+          [
+            {
+              "node": "Respond to Webhook",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Webhook Trigger": {
+        "main": [
+          [
+            {
+              "node": "Normalize Input",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Normalize Input": {
+        "main": [
+          [
+            {
+              "node": "Auth Gate",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Auth Gate": {
+        "main": [
+          [
+            {
+              "node": "Respond Error",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Build API Request",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call YouTube": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call LinkedIn": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Twitter": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Google My Business": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Microsoft Graph": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call WordPress": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    }
+  }
+}
