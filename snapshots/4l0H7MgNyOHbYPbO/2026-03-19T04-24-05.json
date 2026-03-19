@@ -1,0 +1,29 @@
+{
+  "snapshot_at": "2026-03-19T04:24:05.281Z",
+  "reason": "Pre-modification snapshot: No reason provided",
+  "session_id": "cowork-stream3-2026-03-19",
+  "workflow": {
+    "name": "Platform — Global Error Handler",
+    "id": "4l0H7MgNyOHbYPbO",
+    "active": false,
+    "nodes": [
+      {
+        "parameters": {},
+        "id": "n1",
+        "name": "Error Trigger",
+        "type": "n8n-nodes-base.errorTrigger",
+        "typeVersion": 1,
+        "position": [
+          250,
+          300
+        ]
+      }
+    ],
+    "connections": {},
+    "settings": {
+      "executionOrder": "v1",
+      "callerPolicy": "workflowsFromSameOwner",
+      "availableInMCP": false
+    }
+  }
+}
