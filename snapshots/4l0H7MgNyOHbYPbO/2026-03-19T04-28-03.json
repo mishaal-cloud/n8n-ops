@@ -1,0 +1,489 @@
+{
+  "snapshot_at": "2026-03-19T04:28:03.027Z",
+  "reason": "Pre-modification snapshot: No reason provided",
+  "session_id": "cowork-stream3-2026-03-19",
+  "workflow": {
+    "name": "Platform — Global Error Handler",
+    "id": "4l0H7MgNyOHbYPbO",
+    "active": false,
+    "nodes": [
+      {
+        "parameters": {},
+        "id": "n1",
+        "name": "Error Trigger",
+        "type": "n8n-nodes-base.errorTrigger",
+        "typeVersion": 1,
+        "position": [
+          250,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "const items=$input.all();const item=items[0].json;const execution=item.execution||{};const workflow=item.workflow||{};const error=execution.error||{};const errorMessage=error.message||'Unknown error';const lastNode=execution.lastNodeExecuted||'unknown';const executionId=execution.id||'unknown';const executionUrl=execution.url||'';const workflowId=workflow.id||'unknown';const workflowName=workflow.name||'unknown';const msg=errorMessage.toLowerCase();const isTransient=(msg.includes('429')||msg.includes('rate limit')||msg.includes('503')||msg.includes('timeout')||msg.includes('timed out')||msg.includes('econnaborted')||msg.includes('econnreset')||msg.includes('socket hang up')||msg.includes('502'));let severity='MEDIUM';const nl=workflowName.toLowerCase();if(nl.includes('gateway')||nl.includes('handover')||nl.includes('backup')||nl.includes('orchestrate')){severity='CRITICAL';}else if(nl.includes('handler')||nl.includes('crm')||nl.includes('ads')||nl.includes('analytics')||nl.includes('google suite')){severity='HIGH';}else if(nl.includes('test')||nl.includes('dev')||nl.includes('debug')){severity='LOW';}return[{json:{execution_id:executionId,execution_url:executionUrl,workflow_id:workflowId,workflow_name:workflowName,node_name:lastNode,error_message:errorMessage,severity:severity,is_transient:isTransient,timestamp:new Date().toISOString()}}];"
+        },
+        "id": "n2",
+        "name": "Extract Context",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          480,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "rules": {
+            "values": [
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": false,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.severity }}",
+                      "rightValue": "CRITICAL",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "CRITICAL"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": false,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.severity }}",
+                      "rightValue": "HIGH",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "HIGH"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": false,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.severity }}",
+                      "rightValue": "MEDIUM",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "MEDIUM"
+              }
+            ],
+            "fallbackOutput": {
+              "renameOutput": true,
+              "outputKey": "LOW"
+            }
+          },
+          "options": {
+            "allMatchingOutputs": false
+          }
+        },
+        "id": "n3",
+        "name": "Route by Severity",
+        "type": "n8n-nodes-base.switch",
+        "typeVersion": 3.2,
+        "position": [
+          720,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $vars.SLACK_WEBHOOK_URL }}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\"blocks\":[{\"type\":\"header\",\"text\":{\"type\":\"plain_text\",\"text\":\"CRITICAL: {{ $json.workflow_name }}\",\"emoji\":true}},{\"type\":\"section\",\"fields\":[{\"type\":\"mrkdwn\",\"text\":\"*Workflow:*\\n{{ $json.workflow_name }}\"},{\"type\":\"mrkdwn\",\"text\":\"*Node:*\\n{{ $json.node_name }}\"},{\"type\":\"mrkdwn\",\"text\":\"*Severity:*\\n{{ $json.severity }}\"},{\"type\":\"mrkdwn\",\"text\":\"*Transient:*\\n{{ $json.is_transient }}\"}]},{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"*Error:*\\n```{{ $json.error_message }}```\"}},{\"type\":\"actions\",\"elements\":[{\"type\":\"button\",\"text\":{\"type\":\"plain_text\",\"text\":\"View\"},\"url\":\"{{ $json.execution_url }}\"}]},{\"type\":\"context\",\"elements\":[{\"type\":\"mrkdwn\",\"text\":\"{{ $json.execution_id }} | {{ $json.timestamp }}\"}]}]}",
+          "options": {
+            "timeout": 10000
+          }
+        },
+        "id": "n4",
+        "name": "Slack Critical Alert",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          980,
+          100
+        ],
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $vars.SLACK_WEBHOOK_URL }}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\"blocks\":[{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"*HIGH* error in *{{ $json.workflow_name }}* ({{ $json.node_name }})\\n```{{ $json.error_message }}```\\n<{{ $json.execution_url }}|View>\"}}]}",
+          "options": {
+            "timeout": 10000
+          }
+        },
+        "id": "n5",
+        "name": "Slack High Alert",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          980,
+          300
+        ],
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "return[{json:$input.first().json}];"
+        },
+        "id": "n6",
+        "name": "Medium Log Only",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          980,
+          500
+        ]
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "return[{json:$input.first().json}];"
+        },
+        "id": "n7",
+        "name": "Low Log Only",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          980,
+          700
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "leftValue": "={{ $json.is_transient }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "true"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        },
+        "id": "n8",
+        "name": "Is Transient",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.2,
+        "position": [
+          1240,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "const item=$input.first().json;const eid=item.execution_id;if(!eid||eid==='unknown'){return[{json:{...item,retry_status:'skipped'}}];}return[{json:{...item,retry_status:'queued',retry_url:$vars.N8N_HOST+'/api/v1/executions/'+eid+'/retry'}}];"
+        },
+        "id": "n9",
+        "name": "Queue Retry",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1480,
+          200
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $json.retry_url }}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "X-N8N-API-KEY",
+                "value": "={{ $vars.N8N_INTERNAL_API_KEY }}"
+              }
+            ]
+          },
+          "options": {
+            "timeout": 15000
+          }
+        },
+        "id": "n10",
+        "name": "Execute Retry",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1700,
+          200
+        ],
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "const item=$input.first().json;return[{json:{timestamp:new Date().toISOString(),category:'error',domain:item.workflow_name||'unknown',summary:'['+item.severity+'] '+(item.workflow_name||'')+': '+item.error_message.substring(0,100),details:JSON.stringify({eid:item.execution_id,wid:item.workflow_id,node:item.node_name,err:item.error_message,sev:item.severity,trans:item.is_transient,retry:item.retry_status||'none'}),session_id:'global-error-handler'}}];"
+        },
+        "id": "n11",
+        "name": "Prepare Log Entry",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1480,
+          500
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $vars.N8N_HOST }}/webhook/mcp-gateway",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "name": "x-gateway-token",
+                "value": "={{ $vars.MCP_GATEWAY_TOKEN }}"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\"domain\":\"handover\",\"action\":\"log_change\",\"client\":\"ascend\",\"params\":{\"timestamp\":\"{{ $json.timestamp }}\",\"category\":\"{{ $json.category }}\",\"domain\":\"{{ $json.domain }}\",\"summary\":\"{{ $json.summary }}\",\"details\":\"{{ $json.details }}\",\"session_id\":\"{{ $json.session_id }}\"}}",
+          "options": {
+            "timeout": 15000
+          }
+        },
+        "id": "n12",
+        "name": "Log to Changelog",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1700,
+          500
+        ],
+        "continueOnFail": true
+      }
+    ],
+    "connections": {
+      "Error Trigger": {
+        "main": [
+          [
+            {
+              "node": "Extract Context",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Extract Context": {
+        "main": [
+          [
+            {
+              "node": "Route by Severity",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Route by Severity": {
+        "main": [
+          [
+            {
+              "node": "Slack Critical Alert",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Slack High Alert",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Medium Log Only",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Low Log Only",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Slack Critical Alert": {
+        "main": [
+          [
+            {
+              "node": "Is Transient",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Slack High Alert": {
+        "main": [
+          [
+            {
+              "node": "Is Transient",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Medium Log Only": {
+        "main": [
+          [
+            {
+              "node": "Is Transient",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Low Log Only": {
+        "main": [
+          [
+            {
+              "node": "Is Transient",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Is Transient": {
+        "main": [
+          [
+            {
+              "node": "Queue Retry",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Prepare Log Entry",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Queue Retry": {
+        "main": [
+          [
+            {
+              "node": "Execute Retry",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Execute Retry": {
+        "main": [
+          [
+            {
+              "node": "Prepare Log Entry",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Prepare Log Entry": {
+        "main": [
+          [
+            {
+              "node": "Log to Changelog",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "callerPolicy": "workflowsFromSameOwner",
+      "availableInMCP": false
+    }
+  }
+}
