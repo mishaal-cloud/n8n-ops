@@ -1,0 +1,98 @@
+{
+  "snapshot_at": "2026-03-22T23:47:29.113Z",
+  "reason": "Pre-modification snapshot: No reason provided",
+  "session_id": "unknown-session",
+  "workflow": {
+    "name": "Gateway Error Handler (Slack Only)",
+    "id": "YSUNsXBHe0fPA2nc",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {},
+        "id": "ge1",
+        "name": "Error Trigger",
+        "type": "n8n-nodes-base.errorTrigger",
+        "typeVersion": 1,
+        "position": [
+          200,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const exec = $input.first().json.execution || {};\nconst wfName = exec.workflowData?.name || 'Unknown';\nconst errorMsg = exec.error?.message || 'No error message';\nconst nodeName = exec.error?.node?.name || 'Unknown node';\nconst execId = exec.id || 'unknown';\nconst execUrl = $vars.N8N_HOST + '/workflow/m3BWxESfNCs1ccws/executions/' + execId;\nconst ts = new Date().toISOString();\n\nreturn [{\n  json: {\n    workflow_name: wfName,\n    error_message: errorMsg.slice(0, 500),\n    node_name: nodeName,\n    execution_id: execId,\n    execution_url: execUrl,\n    timestamp: ts,\n    source: 'gateway_error_handler'\n  }\n}];"
+        },
+        "id": "ge2",
+        "name": "Extract Context",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          440,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://slack.com/api/chat.postMessage",
+          "sendHeaders": false,
+          "headerParameters": {
+            "parameters": []
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\"channel\":\"#n8n-alerts\",\"blocks\":[{\"type\":\"header\",\"text\":{\"type\":\"plain_text\",\"text\":\"Gateway Error: {{ $json.workflow_name }}\",\"emoji\":true}},{\"type\":\"section\",\"fields\":[{\"type\":\"mrkdwn\",\"text\":\"*Node:*\\n{{ $json.node_name }}\"},{\"type\":\"mrkdwn\",\"text\":\"*Time:*\\n{{ $json.timestamp }}\"}]},{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"*Error:*\\n```{{ $json.error_message }}```\"}},{\"type\":\"actions\",\"elements\":[{\"type\":\"button\",\"text\":{\"type\":\"plain_text\",\"text\":\"View Execution\"},\"url\":\"{{ $json.execution_url }}\"}]},{\"type\":\"context\",\"elements\":[{\"type\":\"mrkdwn\",\"text\":\"Gateway Error Handler | No retry | Exec {{ $json.execution_id }}\"}]}]}",
+          "options": {
+            "timeout": 10000
+          },
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "slackOAuth2Api"
+        },
+        "id": "ge3",
+        "name": "Slack Gateway Alert",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          680,
+          300
+        ],
+        "continueOnFail": true,
+        "credentials": {
+          "slackOAuth2Api": {
+            "id": "Td6a13CD9P2O5K2U",
+            "name": "SLACK_OAUTH_ACCOUNT"
+          }
+        }
+      }
+    ],
+    "connections": {
+      "Error Trigger": {
+        "main": [
+          [
+            {
+              "node": "Extract Context",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Extract Context": {
+        "main": [
+          [
+            {
+              "node": "Slack Gateway Alert",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "callerPolicy": "workflowsFromSameOwner",
+      "availableInMCP": false
+    }
+  }
+}
