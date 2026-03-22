@@ -1,0 +1,195 @@
+{
+  "snapshot_at": "2026-03-22T23:47:22.293Z",
+  "reason": "Pre-modification snapshot: No reason provided",
+  "session_id": "unknown-session",
+  "workflow": {
+    "name": "Infrastructure: Error Handler",
+    "id": "hOWUA7bAQb8Apwd0",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {},
+        "id": "a1b2c3d4-1001-4a01-b001-000000000001",
+        "name": "Error Trigger",
+        "type": "n8n-nodes-base.errorTrigger",
+        "typeVersion": 1,
+        "position": [
+          250,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "// Error Trigger payload shape:\n// $json.execution.error.message, .error.cause.status, .error.name, .error.stack\n// $json.execution.lastNodeExecuted, .execution.id, .execution.url\n// $json.workflow.name, .workflow.id\n\nconst input = $input.first().json;\nconst execution = input.execution || {};\nconst workflow = input.workflow || {};\nconst error = execution.error || {};\nconst cause = error.cause || {};\n\nconst errorMessage = (error.message || '').toLowerCase();\nconst statusCode = cause.status || cause.statusCode || 0;\nconst lastNode = execution.lastNodeExecuted || 'unknown';\nconst workflowName = workflow.name || 'unknown';\nconst executionId = execution.id || $execution.id;\n\n// Infer API domain from workflow name convention\nconst wfLower = workflowName.toLowerCase();\nlet api = 'unknown';\nif (wfLower.includes('crm')) api = 'crm';\nelse if (wfLower.includes('ads')) api = 'ads';\nelse if (wfLower.includes('analytics')) api = 'analytics';\nelse if (wfLower.includes('google suite') || wfLower.includes('google')) api = 'google';\nelse if (wfLower.includes('handover')) api = 'platform';\nelse if (wfLower.includes('github')) api = 'github';\nelse if (wfLower.includes('browser')) api = 'browser';\nelse if (wfLower.includes('agent')) api = 'agent';\nelse if (wfLower.includes('mac bridge') || wfLower.includes('colab')) api = 'compute';\nelse if (wfLower.includes('mcp')) api = 'gateway';\n\nlet category = 'unknown';\nlet severity = 'warning';\nlet suggested_action = 'escalate';\n\nif (statusCode === 401 || statusCode === 403 ||\n    errorMessage.includes('unauthorized') || errorMessage.includes('forbidden') ||\n    errorMessage.includes('authentication') || errorMessage.includes('invalid token') ||\n    errorMessage.includes('credential')) {\n  category = 'auth_error';\n  severity = 'critical';\n  suggested_action = 'escalate';\n} else if (statusCode === 429 ||\n    errorMessage.includes('rate limit') || errorMessage.includes('too many requests') ||\n    errorMessage.includes('quota exceeded')) {\n  category = 'rate_limit';\n  severity = 'warning';\n  suggested_action = 'retry';\n} else if (errorMessage.includes('timeout') || errorMessage.includes('timed out') ||\n    errorMessage.includes('econnaborted') || errorMessage.includes('econnreset') ||\n    errorMessage.includes('socket hang up')) {\n  category = 'timeout';\n  severity = 'warning';\n  suggested_action = 'retry';\n} else if (statusCode >= 500) {\n  category = 'api_error';\n  severity = 'critical';\n  suggested_action = 'retry';\n} else if (statusCode === 400 || statusCode === 422 ||\n    errorMessage.includes('validation') || errorMessage.includes('invalid')) {\n  category = 'validation_error';\n  severity = 'info';\n  suggested_action = 'ignore';\n} else if (statusCode >= 400 && statusCode < 500) {\n  category = 'api_error';\n  severity = 'warning';\n  suggested_action = 'escalate';\n} else if (errorMessage.includes('cannot read') || errorMessage.includes('is not a function') ||\n    errorMessage.includes('undefined') || errorMessage.includes('null')) {\n  category = 'code_error';\n  severity = 'critical';\n  suggested_action = 'escalate';\n} else if (errorMessage) {\n  category = 'api_error';\n  severity = 'warning';\n  suggested_action = 'escalate';\n}\n\nreturn [{\n  json: {\n    error_id: executionId,\n    category,\n    severity,\n    suggested_action,\n    original_error: {\n      message: error.message || 'No error message provided',\n      description: error.description || '',\n      status_code: statusCode,\n      error_type: error.name || 'NodeOperationError',\n      source_workflow: workflowName,\n      source_workflow_id: workflow.id || 'unknown',\n      source_node: lastNode,\n      api,\n      client: 'unknown',\n      execution_url: execution.url || '',\n      stack: (error.stack || '').substring(0, 500)\n    },\n    classified_at: new Date().toISOString()\n  }\n}];"
+        },
+        "id": "a1b2c3d4-1001-4a01-b001-000000000002",
+        "name": "Classify Error",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          480,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const error = $input.first().json;\n\nconst logEntry = {\n  log_type: 'error',\n  error_id: error.error_id,\n  category: error.category,\n  severity: error.severity,\n  suggested_action: error.suggested_action,\n  source_workflow: error.original_error.source_workflow,\n  source_workflow_id: error.original_error.source_workflow_id,\n  source_node: error.original_error.source_node,\n  api: error.original_error.api,\n  client: error.original_error.client,\n  error_message: error.original_error.message,\n  status_code: error.original_error.status_code,\n  execution_url: error.original_error.execution_url,\n  classified_at: error.classified_at,\n  logged_at: new Date().toISOString(),\n  metadata: {\n    handler_workflow_id: $workflow.id,\n    handler_execution_id: $execution.id\n  }\n};\n\nconsole.log(JSON.stringify(logEntry));\n\nreturn [{ json: { ...error, log_entry: logEntry, logged: true } }];"
+        },
+        "id": "a1b2c3d4-1001-4a01-b001-000000000003",
+        "name": "Log Error",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          710,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "id": "condition-critical",
+                "leftValue": "={{ $json.severity }}",
+                "rightValue": "critical",
+                "operator": {
+                  "type": "string",
+                  "operation": "equals"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        },
+        "id": "a1b2c3d4-1001-4a01-b001-000000000004",
+        "name": "Is Critical?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          940,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://slack.com/api/chat.postMessage",
+          "sendHeaders": false,
+          "headerParameters": {
+            "parameters": []
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\"channel\":\"#n8n-alerts\",\"text\":\":rotating_light: *Critical n8n Error*\",\"blocks\":[{\"type\":\"header\",\"text\":{\"type\":\"plain_text\",\"text\":\":rotating_light: Critical n8n Error\",\"emoji\":true}},{\"type\":\"section\",\"fields\":[{\"type\":\"mrkdwn\",\"text\":\"*Workflow:*\\n{{ $('Classify Error').item.json.original_error.source_workflow }}\"},{\"type\":\"mrkdwn\",\"text\":\"*Node:*\\n{{ $('Classify Error').item.json.original_error.source_node }}\"}]},{\"type\":\"section\",\"fields\":[{\"type\":\"mrkdwn\",\"text\":\"*Category:*\\n{{ $('Classify Error').item.json.category }}\"},{\"type\":\"mrkdwn\",\"text\":\"*API:*\\n{{ $('Classify Error').item.json.original_error.api }}\"}]},{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"*Error:*\\n```{{ $('Classify Error').item.json.original_error.message }}```\"}},{\"type\":\"actions\",\"elements\":[{\"type\":\"button\",\"text\":{\"type\":\"plain_text\",\"text\":\"View Execution\",\"emoji\":true},\"url\":\"{{ $('Classify Error').item.json.original_error.execution_url }}\",\"action_id\":\"view_execution\"}]}]}",
+          "options": {
+            "timeout": 10000
+          },
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "slackOAuth2Api"
+        },
+        "id": "a1b2c3d4-1001-4a01-b001-000000000005",
+        "name": "Send Slack Alert",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1170,
+          200
+        ],
+        "credentials": {
+          "slackOAuth2Api": {
+            "id": "Td6a13CD9P2O5K2U",
+            "name": "SLACK_OAUTH_ACCOUNT"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "const error = $input.first().json;\n\nreturn [{\n  json: {\n    error_id: error.error_id,\n    category: error.category,\n    severity: error.severity,\n    suggested_action: error.suggested_action,\n    source_workflow: error.original_error.source_workflow,\n    alerted: error.severity === 'critical',\n    logged: true,\n    processed_at: new Date().toISOString()\n  }\n}];"
+        },
+        "id": "a1b2c3d4-1001-4a01-b001-000000000006",
+        "name": "Return Result",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1400,
+          300
+        ]
+      }
+    ],
+    "connections": {
+      "Error Trigger": {
+        "main": [
+          [
+            {
+              "node": "Classify Error",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Classify Error": {
+        "main": [
+          [
+            {
+              "node": "Log Error",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Log Error": {
+        "main": [
+          [
+            {
+              "node": "Is Critical?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Is Critical?": {
+        "main": [
+          [
+            {
+              "node": "Send Slack Alert",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Return Result",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Send Slack Alert": {
+        "main": [
+          [
+            {
+              "node": "Return Result",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "callerPolicy": "workflowsFromSameOwner",
+      "availableInMCP": false,
+      "errorWorkflow": "4l0H7MgNyOHbYPbO"
+    }
+  }
+}
