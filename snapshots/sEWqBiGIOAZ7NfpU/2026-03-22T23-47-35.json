@@ -1,0 +1,99 @@
+{
+  "snapshot_at": "2026-03-22T23:47:35.766Z",
+  "reason": "Pre-modification snapshot: No reason provided",
+  "session_id": "unknown-session",
+  "workflow": {
+    "name": "🚨 GTM Agent: Error Handler",
+    "id": "sEWqBiGIOAZ7NfpU",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {},
+        "type": "n8n-nodes-base.errorTrigger",
+        "typeVersion": 1,
+        "position": [
+          0,
+          0
+        ],
+        "id": "490ad52b-a97d-492b-926b-c5aa4da01216",
+        "name": "Error Trigger"
+      },
+      {
+        "parameters": {
+          "jsCode": "const err = $input.first().json;\nconst msg = [\n  `*\\ud83d\\udea8 GTM Agent Error*`,\n  `*Workflow:* ${err.workflow?.name || 'unknown'}`,\n  `*Node:* ${err.execution?.lastNodeExecuted || 'unknown'}`,\n  `*Error:* ${err.execution?.error?.message || JSON.stringify(err)}`,\n  `*Time:* ${new Date().toISOString()}`,\n  `*Execution:* https://mmurawala.app.n8n.cloud/executions/${err.execution?.id || ''}`\n].join('\\n');\nreturn [{ json: { text: msg } }];"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          208,
+          0
+        ],
+        "id": "189ccc79-e1da-4dc3-8e62-8d015242c67a",
+        "name": "Format Error"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://slack.com/api/chat.postMessage",
+          "sendBody": true,
+          "bodyParameters": {
+            "parameters": [
+              {
+                "name": "text",
+                "value": "={{ $json.text }}"
+              }
+            ]
+          },
+          "options": {},
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "slackOAuth2Api",
+          "sendHeaders": false
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.4,
+        "position": [
+          416,
+          0
+        ],
+        "id": "13761f55-161e-45a9-afb8-225b52f7e9b9",
+        "name": "Slack Alert",
+        "credentials": {
+          "slackOAuth2Api": {
+            "id": "Td6a13CD9P2O5K2U",
+            "name": "SLACK_OAUTH_ACCOUNT"
+          }
+        }
+      }
+    ],
+    "connections": {
+      "Error Trigger": {
+        "main": [
+          [
+            {
+              "node": "Format Error",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Format Error": {
+        "main": [
+          [
+            {
+              "node": "Slack Alert",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "binaryMode": "separate",
+      "availableInMCP": false,
+      "callerPolicy": "workflowsFromSameOwner"
+    }
+  }
+}
