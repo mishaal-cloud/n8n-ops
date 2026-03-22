@@ -1,0 +1,98 @@
+{
+  "snapshot_at": "2026-03-22T23:47:42.290Z",
+  "reason": "Pre-modification snapshot: No reason provided",
+  "session_id": "unknown-session",
+  "workflow": {
+    "name": "GW: Error Handler",
+    "id": "5xhjxTGNLiazvODf",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {},
+        "id": "e1",
+        "name": "Error Trigger",
+        "type": "n8n-nodes-base.errorTrigger",
+        "position": [
+          0,
+          304
+        ],
+        "typeVersion": 1
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForEachItem",
+          "jsCode": "\n// Format n8n error trigger data into a Slack alert\nconst wf_name = $json.workflow?.name || 'Unknown Workflow';\nconst wf_id = $json.workflow?.id || '';\nconst exec_id = $json.execution?.id || '';\nconst exec_url = $json.execution?.url || `$vars.N8N_HOST/workflow/${wf_id}/executions/${exec_id}`;\nconst error_msg = $json.execution?.error?.message || $json.trigger?.error?.message || 'Unknown error';\nconst error_node = $json.execution?.lastNodeExecuted || 'Unknown node';\nconst ts = new Date().toLocaleString('en-US',{timeZone:'America/Chicago',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});\n\nconst blocks = [\n  {\"type\":\"header\",\"text\":{\"type\":\"plain_text\",\"text\":\"🚨 n8n Workflow Failed\"}},\n  {\"type\":\"section\",\"fields\":[\n    {\"type\":\"mrkdwn\",\"text\":`*Workflow:* ${wf_name}`},\n    {\"type\":\"mrkdwn\",\"text\":`*Time:* ${ts} CST`},\n    {\"type\":\"mrkdwn\",\"text\":`*Failed Node:* ${error_node}`},\n    {\"type\":\"mrkdwn\",\"text\":`*Error:* ${error_msg.slice(0,200)}`}\n  ]},\n  {\"type\":\"actions\",\"elements\":[\n    {\"type\":\"button\",\"text\":{\"type\":\"plain_text\",\"text\":\"View Execution\"},\"url\":exec_url,\"style\":\"danger\"}\n  ]}\n];\n\nreturn [{json:{blocks:JSON.stringify(blocks),wf_name,error_msg}}];\n"
+        },
+        "id": "e2",
+        "name": "Format Error",
+        "type": "n8n-nodes-base.code",
+        "position": [
+          240,
+          304
+        ],
+        "typeVersion": 2
+      },
+      {
+        "parameters": {
+          "authentication": "oAuth2",
+          "select": "channel",
+          "channelId": {
+            "__rl": true,
+            "value": "C0AGXPBN2DR",
+            "mode": "list",
+            "cachedResultName": "alerts"
+          },
+          "messageType": "block",
+          "blocksUi": "={{ $json.blocks }}",
+          "text": "={{ $json.error_msg }}",
+          "otherOptions": {}
+        },
+        "id": "e3",
+        "name": "Slack: Error Alert",
+        "type": "n8n-nodes-base.slack",
+        "position": [
+          480,
+          304
+        ],
+        "typeVersion": 2.3,
+        "webhookId": "277bd60a-9f4e-464d-9616-983d4f7f2ef1",
+        "credentials": {
+          "slackOAuth2Api": {
+            "id": "Td6a13CD9P2O5K2U",
+            "name": "SLACK_OAUTH_ACCOUNT"
+          }
+        }
+      }
+    ],
+    "connections": {
+      "Error Trigger": {
+        "main": [
+          [
+            {
+              "node": "Format Error",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Format Error": {
+        "main": [
+          [
+            {
+              "node": "Slack: Error Alert",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "callerPolicy": "workflowsFromSameOwner",
+      "availableInMCP": false,
+      "errorWorkflow": "4l0H7MgNyOHbYPbO"
+    }
+  }
+}
