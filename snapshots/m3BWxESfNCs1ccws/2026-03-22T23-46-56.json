@@ -1,0 +1,1546 @@
+{
+  "snapshot_at": "2026-03-22T23:46:56.284Z",
+  "reason": "Pre-modification snapshot: No reason provided",
+  "session_id": "unknown-session",
+  "workflow": {
+    "name": "🚀 Orchestrate Gateway v2 [PRIMARY]",
+    "id": "m3BWxESfNCs1ccws",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {
+          "path": "orchestrate-v2",
+          "httpMethod": "POST",
+          "responseMode": "responseNode",
+          "options": {}
+        },
+        "name": "Webhook",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2,
+        "position": [
+          0,
+          300
+        ],
+        "id": "7f4a14ab-3084-4387-b040-a1599a776a4f",
+        "webhookId": "583bca59-47fe-4b28-bc77-c6a0c423035c"
+      },
+      {
+        "parameters": {
+          "jsCode": "// Auth Check v5 — tenant_auth DataTable with SHA-256 hash verification\n// All keys must be registered in tenant_auth via Golden Path onboarding\n// Legacy $vars fallback removed (2026-03-15)\nconst crypto = require('crypto');\n\n// ===== PERMISSION CHECKER (F1: 3-tier permission model) =====\n// Permission levels: read < read_write < admin\n// read: GET + low risk only\n// read_write: all methods except high-risk (DELETE bulk, dangerous ops)\n// admin: everything including high-risk\nfunction checkPermission(permissionLevel, method, riskLevel) {\n  if (!permissionLevel) return { allowed: false, reason: 'No permission level assigned' };\n  \n  if (permissionLevel === 'admin') return { allowed: true };\n  \n  if (permissionLevel === 'read_write') {\n    if (riskLevel === 'high') {\n      return { allowed: false, reason: \"Permission 'read_write' insufficient for high-risk operations (requires admin)\" };\n    }\n    return { allowed: true };\n  }\n  \n  if (permissionLevel === 'read') {\n    if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {\n      return { allowed: false, reason: \"Permission 'read' only allows GET/HEAD/OPTIONS methods\" };\n    }\n    if (riskLevel && riskLevel !== 'low') {\n      return { allowed: false, reason: \"Permission 'read' only allows low-risk endpoints\" };\n    }\n    return { allowed: true };\n  }\n  \n  return { allowed: false, reason: \"Unknown permission level: '\" + permissionLevel + \"'\" };\n}\n// ===== END PERMISSION CHECKER =====\n\n\nconst headers = $input.first().json.headers || {};\nconst body = $input.first().json.body || {};\nconst apiKey = headers['x-api-key'] || '';\n\nif (!apiKey) {\n  return [{json: {\n    authenticated: false,\n    error: {type: 'auth_error', message: 'Missing x-api-key header', details: {}},\n    body, headers\n  }}];\n}\n\n// --- SHA-256 hash verification ---\nfunction verifyApiKey(plainTextKey, storedHash) {\n  const parts = storedHash.split(':');\n  if (parts.length !== 3 || parts[0] !== 'sha256') return false;\n  const salt = parts[1];\n  const expectedHash = parts[2];\n  const actualHash = crypto.createHash('sha256').update(salt + plainTextKey).digest('hex');\n  return actualHash === expectedHash;\n}\n\n// --- Fetch tenant_auth rows ---\nconst n8nHost = $vars.N8N_HOST;\nconst internalKey = $vars.N8N_INTERNAL_API_KEY;\nconst tenantAuthTableId = $vars.TENANT_AUTH_TABLE_ID;\n\nlet tenantMatch = null;\nlet authSource = 'none';\n\ntry {\n  let allRows = [];\n  let cursor = '';\n  let hasMore = true;\n  while (hasMore) {\n    const url = `${n8nHost}/api/v1/data-tables/${tenantAuthTableId}/rows?limit=250${cursor ? '&cursor=' + cursor : ''}`;\n    const resp = await this.helpers.httpRequest({\n      method: 'GET', url,\n      headers: { 'X-N8N-API-KEY': internalKey }\n    });\n    allRows = allRows.concat(resp.data || []);\n    cursor = resp.nextCursor || '';\n    hasMore = !!resp.nextCursor && resp.data && resp.data.length > 0;\n  }\n\n  // Iterate rows and verify API key hash\n  for (const row of allRows) {\n    if (!row.api_key_hash) continue;\n    if (verifyApiKey(apiKey, row.api_key_hash)) {\n      tenantMatch = row;\n      authSource = 'tenant_auth';\n      break;\n    }\n  }\n} catch (e) {\n  // If tenant_auth lookup fails entirely, log and continue to fallback\n  // Fail-closed: if no fallback matches either, deny\n}\n\n// --- Validate tenant match ---\nif (tenantMatch) {\n  // Check active\n  if (tenantMatch.active !== true && tenantMatch.active !== 'true') {\n    return [{json: {\n      authenticated: false,\n      error: {type: 'auth_error', message: 'API key deactivated', details: {client_id: tenantMatch.client_id}},\n      body, headers\n    }}];\n  }\n\n  // Check expiry\n  if (tenantMatch.expires_at && tenantMatch.expires_at !== 'never') {\n    const expiresAt = new Date(tenantMatch.expires_at);\n    if (expiresAt < new Date()) {\n      return [{json: {\n        authenticated: false,\n        error: {type: 'auth_error', message: 'API key expired', details: {client_id: tenantMatch.client_id, expired_at: tenantMatch.expires_at}},\n        body, headers\n      }}];\n    }\n  }\n\n  // Parse domain permissions\n  let permissions = {};\n  try {\n    permissions = JSON.parse(tenantMatch.domain_permissions || '{}');\n  } catch(e) {\n    permissions = {};\n  }\n\n  // Check domain permission\n  const domain = body.domain || '';\n  const action = body.action || '';\n  let permissionLevel = permissions[domain] || permissions['*'] || null;\n\n  if (!permissionLevel && domain) {\n    return [{json: {\n      authenticated: false,\n      error: {type: 'permission_error', message: 'Domain not authorized: ' + domain, details: {client_id: tenantMatch.client_id, allowed_domains: Object.keys(permissions)}},\n      body, headers\n    }}];\n  }\n\n  // F1: 3-tier permission enforcement (read / read_write / admin)\n  const WRITE_PATTERNS = /(?:^|[_.\\s])(create|update|send|reply|draft|move|copy|mutate|upsert|composite|write|append|clear|batch_update|upload|render|generate|image_to_image|upscale|reactions_add)(?:$|[_.\\s])/i;\n  const DELETE_PATTERNS = /(?:^|[_.\\s])(delete|remove|purge|destroy|bulk_delete|trash)(?:$|[_.\\s])/i;\n  const HIGH_RISK_PATTERNS = /(?:^|[_.\\s])(delete|bulk_delete|purge|destroy|permissions|admin)(?:$|[_.\\s])/i;\n\n  let inferredMethod = 'GET';\n  let inferredRisk = 'low';\n  if (DELETE_PATTERNS.test(action)) {\n    inferredMethod = 'DELETE';\n    inferredRisk = 'high';\n  } else if (HIGH_RISK_PATTERNS.test(action)) {\n    inferredMethod = 'POST';\n    inferredRisk = 'high';\n  } else if (WRITE_PATTERNS.test(action)) {\n    inferredMethod = 'POST';\n    inferredRisk = 'medium';\n  }\n\n  const permCheck = checkPermission(permissionLevel, inferredMethod, inferredRisk);\n  if (!permCheck.allowed) {\n    return [{json: {\n      authenticated: false,\n      error: {type: 'permission_error', message: permCheck.reason + ' (domain: ' + domain + ', action: ' + action + ')', details: {client_id: tenantMatch.client_id, permission: permissionLevel, method: inferredMethod, risk: inferredRisk}},\n      body, headers\n    }}];\n  }\n\n  // === ADMIN KEY ALERT (A4) ===\n  if (tenantMatch.client_id === 'ascend_admin') {\n    // Log warning — admin key used\n    // This will be visible in execution data for monitoring\n    console.log('⚠️ ADMIN KEY USED — client_id: ascend_admin, domain: ' + domain + ', action: ' + action + ', timestamp: ' + new Date().toISOString());\n  }\n\n  return [{json: {\n    authenticated: true,\n    authSource: 'tenant_auth',\n    clientId: tenantMatch.client_id,\n    keyClient: tenantMatch.client_id === 'legacy_master' ? '*' : tenantMatch.client_id,\n    keyScope: tenantMatch.client_id === 'ascend_admin' ? 'master' : 'standard',\n    keyName: 'tenant_auth:' + tenantMatch.client_id,\n    permissionLevel: permissionLevel,\n    rateLimitPerMinute: tenantMatch.rate_limit_per_minute || 60,\n    credentialSet: tenantMatch.credential_set || 'default',\n    body, headers\n  }}];\n}\n\n// --- No tenant_auth match: deny access ---\n// Legacy fallback removed — all keys must be in tenant_auth DataTable\nreturn [{json: {\n  authenticated: false,\n  error: {type: 'auth_error', message: 'Invalid API key', details: {hint: 'Key not found in tenant_auth. All keys must be registered via Golden Path onboarding.'}},\n  body, headers\n}}];\n"
+        },
+        "name": "Auth Check",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          220,
+          300
+        ],
+        "id": "0082d38f-a8bb-48b2-a3fc-9f83c372a6ab"
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "id": "a1",
+                "leftValue": "={{ $json.authenticated }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "true"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        },
+        "name": "Auth Gate",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          440,
+          300
+        ],
+        "id": "ea10b54f-16a9-4af5-80aa-35b56ed20628"
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ JSON.stringify({ok:false,domain:null,action:null,client:null,mode:'sync',meta:{request_id:null,execution_id:$execution.id,timestamp:new Date().toISOString()},data:null,error:$json.error}) }}",
+          "options": {
+            "responseCode": 403
+          }
+        },
+        "name": "Auth Fail Response",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.1,
+        "position": [
+          660,
+          500
+        ],
+        "id": "e900961b-b9d9-478e-aaf1-17ca45bc44f7"
+      },
+      {
+        "parameters": {
+          "jsCode": "// Input Validator v2\nconst {body, keyClient, keyScope} = $input.first().json;\nconst {domain, action, client, params, mode, meta} = body || {};\n\nconst errors = [];\nif (!domain) errors.push('domain is required');\nif (!action) errors.push('action is required');\n\nconst resolvedClient = client || (keyClient === '*' ? 'all' : keyClient);\nconst resolvedMode = mode || 'sync';\nconst resolvedMeta = Object.assign({}, meta || {});\nif (!resolvedMeta.request_id) {\n  resolvedMeta.request_id = 'req_' + Date.now() + '_' + Math.random().toString(36).substr(2,9);\n}\nresolvedMeta.source = resolvedMeta.source || 'unknown';\nresolvedMeta.dry_run = resolvedMeta.dry_run || false;\n\nif (errors.length > 0) {\n  return [{json: {\n    valid: false,\n    error: {type: 'validation_error', message: errors.join('; '), details: {missing: errors}},\n    domain: domain || null, action: action || null, client: resolvedClient, mode: resolvedMode, meta: resolvedMeta\n  }}];\n}\n\nreturn [{json: {\n  valid: true,\n  domain, action,\n  client: resolvedClient,\n  params: params || {},\n  mode: resolvedMode,\n  meta: resolvedMeta,\n  keyClient, keyScope\n}}];\n"
+        },
+        "name": "Input Validator",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          880,
+          300
+        ],
+        "id": "8490a7f5-2fcc-4277-b440-2c93f7c06df9"
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "id": "b1",
+                "leftValue": "={{ $json.valid }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "true"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        },
+        "name": "Validation Gate",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          1100,
+          300
+        ],
+        "id": "ce20485d-9ae3-4895-898c-2147c47ef899"
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ JSON.stringify({ok:false,domain:$json.domain,action:$json.action,client:$json.client,mode:$json.mode,meta:Object.assign({},$json.meta,{execution_id:$execution.id,timestamp:new Date().toISOString()}),data:null,error:$json.error}) }}",
+          "options": {
+            "responseCode": 400
+          }
+        },
+        "name": "Validation Fail Response",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.1,
+        "position": [
+          1320,
+          500
+        ],
+        "id": "3d7083d0-653e-4795-b979-24078efe376f"
+      },
+      {
+        "parameters": {
+          "jsCode": "// Registry Lookup — cursor-paginated fetch from api_registry_v2\nconst infra = $json._infra;\nconst allRows = [];\nlet cursor = '';\nlet hasMore = true;\nlet pages = 0;\n\nwhile (hasMore && pages < 20) {\n  pages++;\n  const url = infra.registry_url + '?limit=250' + (cursor ? '&cursor=' + cursor : '');\n  const resp = await this.helpers.httpRequest({\n    method: 'GET',\n    url,\n    headers: { 'X-N8N-API-KEY': infra.api_key },\n    json: true\n  });\n  allRows.push(...(resp.data || []));\n  cursor = resp.nextCursor || '';\n  hasMore = !!resp.nextCursor && (resp.data || []).length > 0;\n}\n\n// Output same shape as original HTTP Request node for Resolve Config compatibility\nconst prev = $input.first().json;\nreturn [{ json: { ...prev, data: allRows } }];\n",
+          "mode": "runOnceForAllItems"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1320,
+          300
+        ],
+        "id": "6eeb1447-0ff1-427b-8bc0-7bd0cd6e7fb5",
+        "name": "Registry Lookup"
+      },
+      {
+        "parameters": {
+          "jsCode": "// Action Lookup — cursor-paginated fetch from action_map_v2\n// Principle 6: Error handling with try/catch\nconst infra = $('Prepare Infra URLs').first().json._infra;\nconst allRows = [];\nlet cursor = '';\nlet hasMore = true;\nlet pages = 0;\n\ntry {\n  while (hasMore && pages < 20) {\n    pages++;\n    const url = infra.action_url + '?limit=250' + (cursor ? '&cursor=' + cursor : '');\n    const resp = await this.helpers.httpRequest({\n      method: 'GET',\n      url,\n      headers: { 'X-N8N-API-KEY': infra.api_key },\n      json: true\n    });\n    allRows.push(...(resp.data || []));\n    cursor = resp.nextCursor || '';\n    hasMore = !!resp.nextCursor && (resp.data || []).length > 0;\n  }\n} catch (error) {\n  // Fail the request if action lookup fails — can't route without actions\n  const prev = $input.first().json;\n  return [{ json: { ...prev, data: [], _action_lookup_error: error.message } }];\n}\n\nconst prev = $input.first().json;\nreturn [{ json: { ...prev, data: allRows } }];",
+          "mode": "runOnceForAllItems"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1540,
+          300
+        ],
+        "id": "60f534cb-04fd-4f6e-9ed0-f1aaf49f80e5",
+        "name": "Action Lookup"
+      },
+      {
+        "parameters": {
+          "jsCode": "// Resolve Config v2 - match registry + action map + tenant config\nconst input = $('Input Validator').first().json;\nconst {domain, action, client, params, mode, meta, keyClient, keyScope} = input;\n\nconst registryData = $('Registry Lookup').first().json;\nconst actionData = $('Action Lookup').first().json;\nconst registryRows = registryData.data || [];\nconst actionRows = actionData.data || [];\n\n// Find registry: exact client first, then 'all' fallback\nconst findBest = (rows, apiName, clientMatch) => {\n  const matches = rows.filter(r => r.api_name === apiName && r.client === clientMatch && r.enabled);\n  if (matches.length <= 1) return matches[0] || null;\n  const withValidMeta = [...matches].reverse().find(r => {\n    if (!r.metadata || r.metadata === '{}') return false;\n    try { const m = typeof r.metadata === 'string' ? JSON.parse(r.metadata) : r.metadata; return m && typeof m === 'object' && Object.keys(m).length > 0; } catch(e) { return false; }\n  });\n  return withValidMeta || matches[0];\n};\nlet reg = findBest(registryRows, domain, client);\nif (!reg) reg = findBest(registryRows, domain, 'all');\nif (reg && !reg.handler_workflow_id) { const hFb = findBest(registryRows, domain, 'all'); if (hFb && hFb.handler_workflow_id) reg = hFb; }\n\nif (!reg) {\n  return [{json: {\n    resolved: false,\n    error: {type: 'registry_error', message: 'No registry entry for domain ' + domain + ' client ' + client, details: {domain, client}},\n    domain, action, client, mode, meta\n  }}];\n}\n\n// Prefer newest action_map row with non-empty endpoint\nconst actionShort = action.startsWith(domain + '.') ? action.slice(domain.length + 1) : action;\nconst actMatches = actionRows.filter(a => a.api_name === domain && (a.action === action || a.action === actionShort) && a.enabled);\n// Prefer handler body_mode over passthrough when both exist for same action\nconst handlerMatches = actMatches.filter(a => a.body_mode === 'handler');\nconst withEndpoint = actMatches.filter(a => a.endpoint && a.endpoint.length > 1);\nconst act = (handlerMatches.length > 0 ? handlerMatches[handlerMatches.length - 1] : withEndpoint.length > 0 ? withEndpoint[withEndpoint.length - 1] : actMatches[actMatches.length - 1]) || null;\nif (!act) {\n  return [{json: {\n    resolved: false,\n    error: {type: 'action_error', message: 'No action ' + action + ' for domain ' + domain, details: {domain, action}},\n    domain, action, client, mode, meta\n  }}];\n}\n\nlet metadata = {};\ntry { metadata = typeof reg.metadata === 'string' ? JSON.parse(reg.metadata) : (reg.metadata || {}); } catch(e) {}\n\n// === TENANT CONFIG LOOKUP ===\nlet tenantConfig = null;\nconst infra = $('Prepare Infra URLs').first().json._infra || {};\nif (infra.tenant_config_url) {\n  try {\n    const tenantResp = await this.helpers.httpRequest({\n      method: 'GET',\n      url: infra.tenant_config_url + '?limit=50',\n      headers: { 'X-N8N-API-KEY': infra.api_key },\n      json: true\n    });\n    const tenants = (tenantResp.data || []);\n    // Use last match (highest ID wins) for given client\n    const matches = tenants.filter(t => t.tenant_id === client);\n    const match = matches.length > 0 ? matches[matches.length - 1] : null;\n    if (match && match.status === 'active') {\n      tenantConfig = {\n        tenant_id: match.tenant_id,\n        display_name: match.display_name,\n        status: match.status,\n        env: match.env,\n        connected_tools: (() => { try { return JSON.parse(match.connected_tools || '{}'); } catch(e) { return {}; } })(),\n        credential_map: (() => { try { return JSON.parse(match.credential_map || '{}'); } catch(e) { return {}; } })(),\n        feature_flags: (() => { try { return JSON.parse(match.feature_flags || '{}'); } catch(e) { return {}; } })(),\n        metadata: (() => { try { return JSON.parse(match.metadata || '{}'); } catch(e) { return {}; } })()\n      };\n    }\n  } catch (e) {\n    // Don't fail the request if tenant lookup fails — fallback to existing behavior\n  }\n}\n\n// Override handler_workflow_id for domains with known handlers but broken registry entries\nconst HANDLER_OVERRIDES = {\n  'bedrock': 'pReqgWyL8hbeLZlr'\n};\nif (HANDLER_OVERRIDES[domain] && !reg.handler_workflow_id) {\n  reg.handler_workflow_id = HANDLER_OVERRIDES[domain];\n}\n\nconst config = {\n  api_name: reg.api_name, base_url: reg.base_url || '',\n  auth_type: reg.auth_type, auth_header: reg.auth_header || '',\n  auth_prefix: reg.auth_prefix || '', credential_var: reg.credential_var || '',\n  credential_id: reg.credential_id || '', credential_type: reg.credential_type || '',\n  handler_workflow_id: reg.handler_workflow_id || '',\n  metadata, rate_limit_rpm: reg.rate_limit_rpm || 60\n};\n\n// Enrich config with tenant data if available\nif (tenantConfig) {\n  config.tenant = tenantConfig;\n  config.tenant_metadata = tenantConfig.metadata;\n  config.tenant_credential = tenantConfig.credential_map[domain] || null;\n}\n\nreturn [{json: {\n  resolved: true, domain, action, client, params, mode, meta,\n  config,\n  actionConfig: { method: act.method, endpoint: act.endpoint || '', body_mode: act.body_mode }\n}}];\n"
+        },
+        "name": "Resolve Config",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1760,
+          300
+        ],
+        "id": "a3c7b452-dce0-4e18-96b8-30c0c8ae2523"
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "id": "c1",
+                "leftValue": "={{ $json.resolved }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "true"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        },
+        "name": "Resolve Gate",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          1980,
+          300
+        ],
+        "id": "39906651-88f7-4ff5-bd4d-51340fbbbfff"
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ JSON.stringify({ok:false,domain:$json.domain,action:$json.action,client:$json.client,mode:$json.mode,meta:Object.assign({},$json.meta,{execution_id:$execution.id,timestamp:new Date().toISOString()}),data:null,error:$json.error}) }}",
+          "options": {
+            "responseCode": 404
+          }
+        },
+        "name": "Resolve Fail Response",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.1,
+        "position": [
+          2200,
+          500
+        ],
+        "id": "83eeafd1-01d8-4a9d-8e3d-bb805a356ffa"
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "id": "d1",
+                "leftValue": "={{ $json.config.handler_workflow_id }}",
+                "rightValue": "",
+                "operator": {
+                  "type": "string",
+                  "operation": "notEmpty"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        },
+        "name": "Route Decision",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          2200,
+          300
+        ],
+        "id": "5383e80c-ef10-4ab5-9f9a-7b479c30c597"
+      },
+      {
+        "parameters": {
+          "jsCode": "// ===== SSRF PROTECTION (A5) =====\nfunction validatePath(path) {\n  if (!path || typeof path !== 'string') return { valid: false, reason: 'Path is required' };\n  if (path.includes('..') || path.includes('//')) return { valid: false, reason: 'Path traversal detected' };\n  if (path.includes('\\\\0') || path.includes('%00')) return { valid: false, reason: 'Null byte in path' };\n  if (!path.startsWith('/')) path = '/' + path;\n  return { valid: true, path };\n}\nfunction validateRequestBody(body) {\n  if (!body) return { valid: true };\n  const s = typeof body === 'string' ? body : JSON.stringify(body);\n  if (s.length > 1048576) return { valid: false, reason: 'Request body exceeds 1MB limit' };\n  return { valid: true };\n}\n// ===== END SSRF PROTECTION =====\n\n// Build Dynamic Request for passthrough APIs\n// ZERO hardcoded domain names — all injection is config-driven via tenant_metadata\nconst {domain, action, client, params, mode, meta, config, actionConfig} = $input.first().json;\n\nlet url = config.base_url || '';\nlet endpoint = actionConfig.endpoint || '';\n\n// Replace path params like {model}\nendpoint = endpoint.replace(/\\{(\\w+)\\}/g, (m, key) => params[key] || m);\n// SSRF: Validate endpoint path before URL construction\nconst pathCheck = validatePath(endpoint);\nif (!pathCheck.valid) {\n  return [{json: { error: true, message: 'SSRF protection: ' + pathCheck.reason, domain, action }}];\n}\nendpoint = pathCheck.path;\nurl = url.replace(/\\/+$/, '') + endpoint;\n\nconst method = actionConfig.method || 'POST';\nconst headers = method === 'GET' ? {} : {'Content-Type': 'application/json'};\nconst queryParams = {};\n\n// Auth: inject API key as header or query param\nif (config.auth_type === 'header' && config.credential_var) {\n  const apiKey = $vars[config.credential_var];\n  if (apiKey) {\n    const prefix = config.auth_prefix ? config.auth_prefix + ' ' : '';\n    headers[config.auth_header] = prefix + apiKey;\n  }\n}\n\nif (config.auth_type === 'query' && config.credential_var) {\n  const apiKey = $vars[config.credential_var];\n  if (apiKey) queryParams['key'] = apiKey;\n}\n\n// Auth: basic auth (e.g., Gong)\nif (config.auth_type === 'basic' && config.credential_var) {\n  const cred = $vars[config.credential_var] || '';\n  if (cred.includes(':')) {\n    headers['Authorization'] = 'Basic ' + Buffer.from(cred).toString('base64');\n  } else {\n    const secret = $vars[config.credential_var.replace('ACCESS_KEY','SECRET_KEY')]\n      || $vars[config.credential_var.replace('ACCESS_KEY','CLIENT_SECRET')]\n      || $vars[config.credential_var.replace('ACCESS_KEY_KAHUNA','CLIENT_SECRET_KAHUNA')]\n      || '';\n    headers['Authorization'] = 'Basic ' + Buffer.from(cred + ':' + secret).toString('base64');\n  }\n}\n\n// Domain-specific headers from registry metadata (e.g., anthropic-version, Notion-Version)\n// These are per-API requirements, not per-tenant — stored in api_registry_v2.metadata\nif (config.metadata && config.metadata._headers) {\n  for (const [hKey, hVal] of Object.entries(config.metadata._headers)) {\n    headers[hKey] = hVal;\n  }\n}\n\n// === TENANT METADATA AUTO-INJECTION (config-driven, zero hardcoded domains) ===\n// tenant_metadata is domain-keyed: {\"ga4\": {\"property_id\": \"123\"}, \"gong\": {\"_base_url\": \"...\"}}\n// Convention:\n//   _base_url     → overrides the request URL base\n//   _header_*     → injected as HTTP header (key after prefix)\n//   anything else → injected as param default (only if not already set by caller)\nif (config.tenant_metadata && config.tenant_metadata[domain]) {\n  const domainMeta = config.tenant_metadata[domain];\n  for (const [key, value] of Object.entries(domainMeta)) {\n    if (key === '_base_url') {\n      // Override base URL (e.g., Gong has per-tenant API base)\n      url = value + endpoint;\n    } else if (key.startsWith('_header_')) {\n      // Inject as HTTP header (e.g., _header_login-customer-id → login-customer-id header)\n      headers[key.slice(8)] = value;\n    } else if (!params[key]) {\n      // Inject as param default (only if caller didn't already provide it)\n      params[key] = value;\n    }\n  }\n}\n\n// Forward params: GET→query, POST/PATCH/PUT/DELETE→body\nlet body = {};\nlet extraQueryParams = {};\nif (method === 'GET') {\n  extraQueryParams = params;\n  body = null;\n} else {\n  body = params;\n}\n\n// SSRF: Validate request body size\nconst bodyCheck = validateRequestBody(body);\nif (!bodyCheck.valid) {\n  return [{json: { error: true, message: 'SSRF protection: ' + bodyCheck.reason, domain, action }}];\n}\n\n// Build full URL with query params\nlet fullUrl = url;\nconst mergedQP = Object.assign({}, queryParams, extraQueryParams);\nconst qp = Object.entries(mergedQP);\nif (qp.length > 0) {\n  fullUrl += (url.includes('?') ? '&' : '?') + qp.map(([k,v]) => k + '=' + encodeURIComponent(v)).join('&');\n}\n\n// Validate: no unresolved {placeholders} in URL\nconst unresolvedMatch = fullUrl.match(/\\{(\\w+)\\}/);\nif (unresolvedMatch) {\n  return [{json: {\n    validationError: true,\n    ok: false,\n    error: {\n      type: 'validation',\n      message: `Missing required param '${unresolvedMatch[1]}' for ${domain}/${action}. The endpoint requires '${unresolvedMatch[1]}' in params.`\n    },\n    domain, action, client, mode, meta\n  }}];\n}\n\nvar bodyJson = (method === \"GET\" || !body) ? \"\" : JSON.stringify(body);\nreturn [{json: {\n  requestUrl: fullUrl, requestMethod: method,\n  requestHeaders: headers, requestBody: body, bodyJson: bodyJson,\n  domain, action, client, mode, meta, config\n}}];\n"
+        },
+        "name": "Build Dynamic Request",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2420,
+          400
+        ],
+        "id": "eb3d41a4-a9d6-40af-b213-53d95f9e8283"
+      },
+      {
+        "parameters": {
+          "jsCode": "// Format Handler Response + Failure Alerting (ADR-001 Phase 2)\nconst h = $input.first().json;\nconst r = $('Resolve Config').first().json;\nconst {domain, action, client, mode, meta} = r;\nconst infra = $('Prepare Infra URLs').first().json._infra || {};\n\nconst isV2 = h.hasOwnProperty('ok');\nconst isError = isV2 ? !h.ok : false;\n\n// Track failures: 3 per domain in 5 min -> Slack alert\nif (isError && domain && infra.n8n_host) {\n  try {\n    const COUNTER_TABLE = $vars.RATE_LIMIT_TABLE_ID || 'FsTInkNFnck4KNrp';\n    const now = new Date();\n    const fiveMinAgo = new Date(now.getTime() - 5 * 60 * 1000).toISOString();\n    \n    // Write this failure\n    await this.helpers.httpRequest({\n      method: 'POST',\n      url: infra.n8n_host + '/api/v1/data-tables/' + COUNTER_TABLE + '/rows',\n      headers: {'X-N8N-API-KEY': infra.api_key, 'Content-Type': 'application/json'},\n      body: JSON.stringify({data: [{\n        domain: domain, client: client || 'unknown',\n        error_type: (h.error && h.error.type) || 'handler_error',\n        error_message: (h.error && h.error.message) || 'unknown',\n        timestamp: now.toISOString(),\n        source: 'handler'\n      }]})\n    });\n    \n    // Read recent failures for this domain\n    const counters = await this.helpers.httpRequest({\n      method: 'GET',\n      url: infra.n8n_host + '/api/v1/data-tables/' + COUNTER_TABLE + '/rows?limit=250',\n      headers: {'X-N8N-API-KEY': infra.api_key},\n      json: true\n    });\n    const recent = (counters.data || []).filter(r => \n      r.domain === domain && r.timestamp && r.timestamp > fiveMinAgo\n    );\n    \n    // Alert if threshold exceeded (3 failures in 5 min)\n    if (recent.length >= 3) {\n      // Check if we already alerted (avoid storm)\n      const alertKey = 'alert_' + domain;\n      const recentAlerts = (counters.data || []).filter(r => \n        r.domain === alertKey && r.timestamp && r.timestamp > fiveMinAgo\n      );\n      \n      if (recentAlerts.length === 0) {\n        // Fire Slack alert\n        try {\n          const slackUrl = infra.n8n_host + '/webhook/handler-google-suite';\n          await this.helpers.httpRequest({\n            method: 'POST', url: slackUrl,\n            headers: {'x-handler-secret': infra.handler_secret, 'Content-Type': 'application/json'},\n            body: JSON.stringify({\n              domain: 'slack', action: 'post_message', client: 'ascend',\n              params: {\n                channel: '#n8n-alerts',\n                text: ':rotating_light: *Gateway Failure Alert*\\n*Domain:* ' + domain + '\\n*Failures:* ' + recent.length + ' in last 5 min\\n*Error:* ' + ((h.error && h.error.message) || 'unknown') + '\\n*Client:* ' + (client || 'unknown') + '\\n*Action:* Investigate via `get_platform_context`'\n              }\n            })\n          });\n        } catch(e) {} // Alert is best-effort\n        \n        // Mark alert sent\n        try {\n          await this.helpers.httpRequest({\n            method: 'POST',\n            url: infra.n8n_host + '/api/v1/data-tables/' + COUNTER_TABLE + '/rows',\n            headers: {'X-N8N-API-KEY': infra.api_key, 'Content-Type': 'application/json'},\n            body: JSON.stringify({data: [{domain: alertKey, timestamp: now.toISOString(), source: 'alert_sent'}]})\n          });\n        } catch(e) {}\n      }\n    }\n  } catch(e) {} // Failure tracking is best-effort, never blocks the response\n}\n\nif (isV2) {\n  return [{json: {ok: h.ok, domain, action, client, mode, meta: Object.assign({}, meta, {execution_id: $execution.id, timestamp: new Date().toISOString()}), data: h.data, error: h.error || null}}];\n}\n\nreturn [{json: {ok: true, domain, action, client, mode, meta: Object.assign({}, meta, {execution_id: $execution.id, timestamp: new Date().toISOString()}), data: h, error: null}}];\n"
+        },
+        "name": "Format Handler Response",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2960,
+          200
+        ],
+        "id": "7fd5383e-fe27-4878-b06e-8d22725e1230"
+      },
+      {
+        "parameters": {
+          "jsCode": "// Format Passthrough Response v3 — with proper error classification\nconst h = $input.first().json;\nconst b = $('Build Dynamic Request').first().json;\nconst {domain, action, client, mode, meta} = b;\n\nconst metaOut = Object.assign({}, meta, {execution_id: $execution.id, timestamp: new Date().toISOString()});\n\n// Detect status code from various response shapes\nconst sc = h.statusCode || h.status || (h.error && h.error.status) || 200;\nconst isErr = sc >= 400 || (h.error && !h.statusCode);\n\nif (isErr) {\n  const errBody = h.body || h.data || (h.error && h.error.message) || h;\n  \n  // Classify error type\n  let errorType = 'api_error';\n  if (sc === 401 || sc === 403) errorType = 'auth_error';\n  else if (sc === 400) errorType = 'schema_error';\n  else if (sc === 404 || sc === 422) errorType = 'logic_error';\n  else if (sc >= 500) errorType = 'system_error';\n  \n  // Extract human-readable message\n  let msg = domain + ' API returned ' + sc;\n  if (typeof errBody === 'object' && errBody !== null) {\n    msg = errBody.error?.message || errBody.message || errBody.error_description || msg;\n  } else if (typeof errBody === 'string') {\n    msg = errBody.slice(0, 300);\n  }\n  \n  return [{json: {\n    ok: false, domain, action, client, mode, meta: metaOut, data: null,\n    error: {\n      type: errorType, message: msg, status: sc,\n      details: typeof errBody === 'string' ? errBody.slice(0, 500) : JSON.stringify(errBody).slice(0, 500)\n    }\n  }}];\n}\n\nconst rb = h.body || h.data || h;\nreturn [{json: {ok: true, domain, action, client, mode, meta: metaOut, data: rb, error: null}}];\n"
+        },
+        "name": "Format Passthrough Response",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2860,
+          400
+        ],
+        "id": "6b13c936-22b2-42e3-b2c7-aea4445a97a5"
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ JSON.stringify($json) }}",
+          "options": {
+            "responseCode": "={{ $json.ok ? 200 : 500 }}"
+          }
+        },
+        "name": "Send Handler Response",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.1,
+        "position": [
+          3180,
+          200
+        ],
+        "id": "7303716d-f7ba-41d9-8987-97fcc50a8d76"
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ JSON.stringify($json) }}",
+          "options": {
+            "responseCode": "={{ $json.ok ? 200 : ($json.error && $json.error.status && $json.error.status < 500 ? $json.error.status : 500) }}"
+          }
+        },
+        "name": "Send Passthrough Response",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.1,
+        "position": [
+          3080,
+          400
+        ],
+        "id": "9e329ebc-652f-4e1a-b542-6a430c750091"
+      },
+      {
+        "parameters": {
+          "jsCode": "// Prepare Handler Input — merges registry + tenant metadata into params for handler workflows\n// Principle 2: Multi-tenant — tenant_metadata[domain] auto-injected\n// Principle 3: Config-driven — zero hardcoded domain names\nconst v2 = $input.first().json;\nconst registryMeta = v2.config?.metadata || {};\nconst enrichedParams = Object.assign({}, v2.params, registryMeta);\n\n// === TENANT METADATA AUTO-INJECTION (same pattern as Build Dynamic Request) ===\n// tenant_metadata is domain-keyed: {\"google_tag_manager\": {\"account_id\": \"123\", ...}}\n// Convention for handler path:\n//   _base_url     → stored but not applied here (handler manages its own URLs)\n//   _header_*     → stored but not applied here (handler manages its own headers)\n//   anything else → injected as param default (only if not already set by caller)\nif (v2.config?.tenant_metadata && v2.config.tenant_metadata[v2.domain]) {\n  const domainMeta = v2.config.tenant_metadata[v2.domain];\n  for (const [key, value] of Object.entries(domainMeta)) {\n    if (key === '_base_url' || key.startsWith('_header_')) {\n      // Skip URL/header overrides — handler workflows manage their own HTTP layer\n      continue;\n    }\n    if (!enrichedParams[key]) {\n      enrichedParams[key] = value;\n    }\n  }\n}\n\n// Strip domain prefix from action: \"hubspot.get\" → \"get\"\nconst actionShort = v2.action.startsWith(v2.domain + '.') ? v2.action.slice(v2.domain.length + 1) : v2.action;\nreturn [{json: {api: v2.domain, action: actionShort, client: v2.client, params: enrichedParams, domain: v2.domain, mode: v2.mode, meta: v2.meta, config: v2.config, actionConfig: v2.actionConfig, _v2: v2}}];"
+        },
+        "name": "Prepare Handler Input",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2320,
+          200
+        ],
+        "id": "f10de5da-5270-40db-b80d-f6d16f8e48fe"
+      },
+      {
+        "parameters": {
+          "rules": {
+            "values": [
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.config.handler_workflow_id }}",
+                      "rightValue": "6e9ooA3kc0zAPWyy",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "Marketing Ads"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.config.handler_workflow_id }}",
+                      "rightValue": "EPFlvH1zLhvUUyS7",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "Analytics"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.config.handler_workflow_id }}",
+                      "rightValue": "WZtxStkDZ2pr9s3l",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "CRM"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.config.handler_workflow_id }}",
+                      "rightValue": "RKoOuaqcnbSYfLLp",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "Google Suite"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.config.handler_workflow_id }}",
+                      "rightValue": "eZlzhG7YHsdWnArf",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "GitHub"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.config.handler_workflow_id }}",
+                      "rightValue": "OahB4HRFvyy4C5Zn",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "Handover"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.config.handler_workflow_id }}",
+                      "rightValue": "pReqgWyL8hbeLZlr",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "Bedrock"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json.config.handler_workflow_id }}",
+                      "rightValue": "QECghQwY0rSzw2yK",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "Browser"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "name": "Handler Switch",
+        "type": "n8n-nodes-base.switch",
+        "typeVersion": 3,
+        "position": [
+          2520,
+          200
+        ],
+        "id": "fed72ca5-ae89-4e8a-8e23-f425eb6a8c3b"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $('Prepare Infra URLs').first().json._infra.handler_marketing }}",
+          "sendBody": true,
+          "bodyParameters": {
+            "parameters": []
+          },
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json) }}",
+          "options": {
+            "timeout": 30000,
+            "redirect": {
+              "redirect": {
+                "followRedirects": false
+              }
+            }
+          },
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "x-handler-secret",
+                "value": "={{ $('Prepare Infra URLs').first().json._infra.handler_secret }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          2740,
+          60
+        ],
+        "id": "83422ad6-238e-4a04-b7c2-90aefee89953",
+        "name": "Call Marketing Ads"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $('Prepare Infra URLs').first().json._infra.handler_analytics }}",
+          "sendBody": true,
+          "bodyParameters": {
+            "parameters": []
+          },
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json) }}",
+          "options": {
+            "timeout": 30000,
+            "redirect": {
+              "redirect": {
+                "followRedirects": false
+              }
+            }
+          },
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "x-handler-secret",
+                "value": "={{ $('Prepare Infra URLs').first().json._infra.handler_secret }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          2740,
+          180
+        ],
+        "id": "1c253575-c0e2-4cfd-ad51-417513a308d6",
+        "name": "Call Analytics"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $('Prepare Infra URLs').first().json._infra.handler_crm }}",
+          "sendBody": true,
+          "bodyParameters": {
+            "parameters": []
+          },
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json) }}",
+          "options": {
+            "timeout": 30000,
+            "redirect": {
+              "redirect": {
+                "followRedirects": false
+              }
+            }
+          },
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "x-handler-secret",
+                "value": "={{ $('Prepare Infra URLs').first().json._infra.handler_secret }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          2740,
+          300
+        ],
+        "id": "b3572b57-96f6-4415-8c36-1d765e559d7d",
+        "name": "Call CRM"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $('Prepare Infra URLs').first().json._infra.handler_gsuite }}",
+          "sendBody": true,
+          "bodyParameters": {
+            "parameters": []
+          },
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json) }}",
+          "options": {
+            "timeout": 30000,
+            "redirect": {
+              "redirect": {
+                "followRedirects": false
+              }
+            }
+          },
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "x-handler-secret",
+                "value": "={{ $('Prepare Infra URLs').first().json._infra.handler_secret }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          2740,
+          420
+        ],
+        "id": "9417ddd4-7696-4990-b210-e4ca3e5c2feb",
+        "name": "Call Google Suite"
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "version": 2,
+              "leftValue": "",
+              "caseSensitive": true,
+              "typeValidation": "loose"
+            },
+            "conditions": [
+              {
+                "id": "08057bcc-16ce-4edb-b114-68735c33eaf8",
+                "leftValue": "={{ $json.validationError }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "equals"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        },
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.2,
+        "position": [
+          2620,
+          400
+        ],
+        "id": "9420cc1c-6985-4ad8-afca-4931769ba405",
+        "name": "Passthrough Validation"
+      },
+      {
+        "parameters": {
+          "options": {
+            "responseCode": 400
+          },
+          "respondWith": "json",
+          "responseBody": "={{ JSON.stringify($json) }}"
+        },
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.1,
+        "position": [
+          2820,
+          250
+        ],
+        "id": "0e3ce1b3-c8e9-454e-b1c1-e4f89f19608d",
+        "name": "Send Validation Error"
+      },
+      {
+        "id": "93f44648-7dbc-4de1-8a45-0b8f3906560b",
+        "name": "Is AI Domain?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.2,
+        "position": [
+          3080,
+          500
+        ],
+        "parameters": {
+          "conditions": {
+            "options": {
+              "version": 2,
+              "leftValue": "",
+              "caseSensitive": true,
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "id": "eb0e2857-d6b7-4782-8fd8-6273e4126cd2",
+                "leftValue": "={{ $json.domain }}",
+                "rightValue": "^(anthropic|openai|groq|deepseek|gemini|openrouter|perplexity|bedrock)$",
+                "operator": {
+                  "type": "string",
+                  "operation": "regex"
+                }
+              }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        }
+      },
+      {
+        "id": "b4096c7b-aa1c-4152-bfde-1c669d207ea5",
+        "name": "Log AI Cost",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          3280,
+          500
+        ],
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $('Prepare Infra URLs').first().json._infra.handler_cost }}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({ domain: $json.domain, action: $json.action, client: $json.client, model: ($json.data && $json.data.model) || 'unknown', data: $json.data }) }}",
+          "options": {
+            "timeout": 5000
+          }
+        },
+        "continueOnFail": true
+      },
+      {
+        "id": "code_api_request_001",
+        "name": "API Request (Code)",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2640,
+          500
+        ],
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "// API Request (Code) v3 — with proper error preservation\n// Bypasses HTTP Request node jsonBody expression bug (n8n #15996, #18181)\nconst input = $input.first().json;\nconst {\n  requestUrl, requestMethod, requestHeaders, requestBody,\n  domain, action, client, mode, meta, config\n} = input;\n\nconst options = {\n  method: requestMethod || 'POST',\n  url: requestUrl,\n  headers: Object.assign({}, requestHeaders || {}),\n  returnFullResponse: true,\n  ignoreHttpStatusErrors: true,\n  timeout: 120000,\n};\n\nif (requestMethod !== 'GET' && requestBody !== null && requestBody !== undefined) {\n  options.body = requestBody;\n  options.json = true;\n}\n\ntry {\n  const response = await this.helpers.httpRequest(options);\n  \n  // With returnFullResponse + ignoreHttpStatusErrors, response = { body, headers, statusCode }\n  if (response && typeof response === 'object' && 'statusCode' in response) {\n    return [{ json: response }];\n  }\n  \n  // Fallback: if returnFullResponse didn't work, response is just the body\n  return [{ json: response }];\n} catch (error) {\n  // Extract real status code from error\n  let status = 500;\n  let errDetail = error.message || 'Unknown error';\n  let rawBody = null;\n  \n  // Try to extract actual HTTP status from error\n  if (error.httpCode) status = error.httpCode;\n  else if (error.statusCode) status = error.statusCode;\n  else if (error.cause?.response?.statusCode) status = error.cause.response.statusCode;\n  else {\n    // Parse from error message: \"Request failed with status code NNN\"\n    const match = errDetail.match(/status code (\\d+)/);\n    if (match) status = parseInt(match[1]);\n  }\n  \n  // Try to extract response body\n  try {\n    if (error.cause?.response?.body) rawBody = error.cause.response.body;\n    else if (error.response?.data) rawBody = error.response.data;\n    else if (error.response?.body) rawBody = error.response.body;\n  } catch(e) {}\n  \n  return [{ json: {\n    statusCode: status,\n    body: rawBody,\n    error: {\n      message: errDetail,\n      code: error.code || 'ERR_REQUEST',\n      status: status,\n      raw_body: rawBody ? JSON.stringify(rawBody).slice(0, 500) : null\n    }\n  }}];\n}\n"
+        },
+        "continueOnFail": true
+      },
+      {
+        "id": "e10e0e1a-5787-4e96-a74a-c27495eb23b0",
+        "name": "Prepare Infra URLs",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1210,
+          300
+        ],
+        "parameters": {
+          "jsCode": "// Prepare Infra URLs — resolves $vars once, passes as data\n// Centralizes all infrastructure URLs so HTTP Request nodes have zero hardcoded values\nconst N8N_HOST = $vars.N8N_HOST;\nconst API_KEY = $vars.N8N_INTERNAL_API_KEY;\nconst HANDLER_SECRET = $vars.GW_HANDLER_INTERNAL_SECRET;\n\n// Table IDs\nconst REGISTRY_TABLE = $vars.REGISTRY_V2_API_TABLE_ID;\nconst ACTION_TABLE = $vars.REGISTRY_V2_ACTION_TABLE_ID;\nconst TENANT_TABLE = $vars.TENANT_CONFIG_TABLE_ID || '';\n\nif (!N8N_HOST) throw new Error('$vars.N8N_HOST is undefined — check variable scope');\n\nconst prev = $input.first().json;\nreturn [{json: {\n  ...prev,\n  _infra: {\n    n8n_host: N8N_HOST,\n    api_key: API_KEY,\n    handler_secret: HANDLER_SECRET,\n    registry_url: N8N_HOST + '/api/v1/data-tables/' + REGISTRY_TABLE + '/rows',\n    action_url: N8N_HOST + '/api/v1/data-tables/' + ACTION_TABLE + '/rows',\n    tenant_config_url: TENANT_TABLE ? (N8N_HOST + '/api/v1/data-tables/' + TENANT_TABLE + '/rows') : '',\n    handler_marketing: N8N_HOST + '/webhook/handler-marketing-ads',\n    handler_analytics: N8N_HOST + '/webhook/handler-analytics',\n    handler_crm: N8N_HOST + '/webhook/handler-crm',\n    handler_gsuite: N8N_HOST + '/webhook/handler-google-suite',\n    handler_cost: N8N_HOST + '/webhook/ai-cost-log',\n    handler_github: N8N_HOST + '/webhook/handler-github',\n    handler_handover: N8N_HOST + '/webhook/handler-handover',\n    handler_bedrock: N8N_HOST + '/webhook/handler-bedrock'\n  }\n}}];\n"
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "\n// Rate Limit Check v5 — Self-Healing + Paginated read + append-only counters + AI budget\nconst input = $input.first().json;\nconst body = input.body || {};\nconst domain = body.domain || 'unknown';\nconst client = body.client || 'unknown';\nconst keyScope = input.keyScope || 'standard';\nconst keyName = input.keyName || 'unknown';\n\nconst AI_DOMAINS = new Set(['anthropic','openai','gemini','deepseek','groq','openrouter','perplexity','bedrock']);\nconst isAI = AI_DOMAINS.has(domain);\n\nconst HOURLY_LIMITS = {\n  anthropic:  { standard: 20,  internal: 50,  master: 100 },\n  openai:     { standard: 20,  internal: 50,  master: 100 },\n  gemini:     { standard: 30,  internal: 60,  master: 120 },\n  deepseek:   { standard: 30,  internal: 60,  master: 120 },\n  groq:       { standard: 50,  internal: 100, master: 200 },\n  openrouter: { standard: 20,  internal: 50,  master: 100 },\n  perplexity: { standard: 20,  internal: 50,  master: 100 },\n  bedrock:    { standard: 20,  internal: 50,  master: 100 },\n  hubspot:    { standard: 200, internal: 500, master: 1000 },\n  salesforce: { standard: 100, internal: 250, master: 500 },\n  google_ads: { standard: 100, internal: 200, master: 500 },\n  ga4:        { standard: 100, internal: 200, master: 500 },\n  gmail:      { standard: 200, internal: 500, master: 1000 },\n  drive:      { standard: 200, internal: 500, master: 1000 },\n  sheets:     { standard: 200, internal: 500, master: 1000 },\n  slack:      { standard: 200, internal: 500, master: 1000 },\n  notion:     { standard: 200, internal: 500, master: 1000 },\n  wordpress:  { standard: 100, internal: 250, master: 500 },\n  semrush:    { standard: 50,  internal: 100, master: 200 },\n  _default:   { standard: 100, internal: 250, master: 500 }\n};\n\nconst AI_BUDGET = { standard: 10.00, internal: 25.00, master: 50.00 };\n\nconst host = $vars.N8N_HOST;\nconst apiKey = $vars.N8N_INTERNAL_API_KEY;\nlet rlTableId = $vars.RATE_LIMIT_TABLE_ID;\nconst costTableId = $vars.AI_COST_TRACKER_TABLE_ID;\nconst now = new Date();\nconst hourBucket = now.toISOString().slice(0, 13);\n\n// ─── SELF-HEALING: Rate Limit Table Cleanup (once per hour) ───\nconst CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1 hour\nconst CLEANUP_THRESHOLD = 500;\nconst lastCleanup = $vars.RATE_LIMIT_LAST_CLEANUP;\nconst cleanupDue = !lastCleanup || (Date.now() - new Date(lastCleanup).getTime()) > CLEANUP_INTERVAL_MS;\n\nif (cleanupDue && rlTableId && host && apiKey) {\n  try {\n    // Count rows (up to 3 pages = 750 max scan)\n    let totalRows = 0;\n    let cursor = null;\n    for (let page = 0; page < 3; page++) {\n      const url = host + '/api/v1/data-tables/' + rlTableId + '/rows?limit=250' + (cursor ? '&cursor=' + cursor : '');\n      const resp = await this.helpers.httpRequest({ method: 'GET', url, headers: { 'X-N8N-API-KEY': apiKey }, json: true, timeout: 5000 });\n      totalRows += (resp.data || []).length;\n      cursor = resp.nextCursor || null;\n      if (!cursor || totalRows > CLEANUP_THRESHOLD) break;\n    }\n\n    if (totalRows > CLEANUP_THRESHOLD) {\n      // DELETE bloated table\n      await this.helpers.httpRequest({\n        method: 'DELETE', url: host + '/api/v1/data-tables/' + rlTableId,\n        headers: { 'X-N8N-API-KEY': apiKey }, timeout: 10000\n      });\n\n      // CREATE fresh table\n      const createResp = await this.helpers.httpRequest({\n        method: 'POST', url: host + '/api/v1/data-tables',\n        headers: { 'X-N8N-API-KEY': apiKey, 'Content-Type': 'application/json' },\n        body: JSON.stringify({\n          name: 'rate_limit_counters',\n          columns: [\n            { name: 'client', type: 'string' },\n            { name: 'domain', type: 'string' },\n            { name: 'hour', type: 'string' },\n            { name: 'ts', type: 'string' }\n          ]\n        }),\n        json: true, timeout: 10000\n      });\n      const newTableId = createResp.id;\n\n      // UPDATE variables (lookup by key, no hardcoded IDs)\n      const varsResp = await this.helpers.httpRequest({\n        method: 'GET', url: host + '/api/v1/variables',\n        headers: { 'X-N8N-API-KEY': apiKey }, json: true, timeout: 5000\n      });\n      for (const v of (varsResp.data || [])) {\n        if (v.key === 'RATE_LIMIT_TABLE_ID') {\n          await this.helpers.httpRequest({\n            method: 'PUT', url: host + '/api/v1/variables/' + v.id,\n            headers: { 'X-N8N-API-KEY': apiKey, 'Content-Type': 'application/json' },\n            body: JSON.stringify({ key: 'RATE_LIMIT_TABLE_ID', value: newTableId }),\n            timeout: 5000\n          });\n        }\n        if (v.key === 'RATE_LIMIT_LAST_CLEANUP') {\n          await this.helpers.httpRequest({\n            method: 'PUT', url: host + '/api/v1/variables/' + v.id,\n            headers: { 'X-N8N-API-KEY': apiKey, 'Content-Type': 'application/json' },\n            body: JSON.stringify({ key: 'RATE_LIMIT_LAST_CLEANUP', value: now.toISOString() }),\n            timeout: 5000\n          });\n        }\n      }\n      // Use new table for the rest of this request\n      rlTableId = newTableId;\n    } else {\n      // Under threshold — just update last-check timestamp\n      const varsResp = await this.helpers.httpRequest({\n        method: 'GET', url: host + '/api/v1/variables',\n        headers: { 'X-N8N-API-KEY': apiKey }, json: true, timeout: 5000\n      });\n      for (const v of (varsResp.data || [])) {\n        if (v.key === 'RATE_LIMIT_LAST_CLEANUP') {\n          await this.helpers.httpRequest({\n            method: 'PUT', url: host + '/api/v1/variables/' + v.id,\n            headers: { 'X-N8N-API-KEY': apiKey, 'Content-Type': 'application/json' },\n            body: JSON.stringify({ key: 'RATE_LIMIT_LAST_CLEANUP', value: now.toISOString() }),\n            timeout: 5000\n          });\n          break;\n        }\n      }\n    }\n  } catch (e) {\n    // Fail open — cleanup failure must never block gateway requests\n  }\n}\n// ─── END SELF-HEALING ───\n\ntry {\n  // ── CHECK 1: Per-client hourly rate limit (paginated read) ──\n  let hourlyCount = 0;\n  const domainLimits = HOURLY_LIMITS[domain] || HOURLY_LIMITS._default;\n  const hourlyLimit = domainLimits[keyScope] || domainLimits.standard;\n\n  if (rlTableId) {\n    let cursor = null;\n    do {\n      const url = host + '/api/v1/data-tables/' + rlTableId + '/rows?limit=250' + (cursor ? '&cursor=' + cursor : '');\n      const resp = await this.helpers.httpRequest({\n        method: 'GET', url, headers: { 'X-N8N-API-KEY': apiKey }, json: true, timeout: 5000\n      });\n      for (const row of (resp.data || [])) {\n        if (row.client === client && row.domain === domain && row.hour === hourBucket) {\n          hourlyCount++;\n        }\n      }\n      cursor = resp.nextCursor || null;\n      // Early exit if already over limit\n      if (hourlyCount >= hourlyLimit) break;\n    } while (cursor);\n\n    if (hourlyCount >= hourlyLimit) {\n      return [{json: {\n        ...input, rate_limited: true,\n        error: {\n          type: 'rate_limit_exceeded',\n          message: 'Hourly limit exceeded for ' + domain + ': ' + hourlyCount + '/' + hourlyLimit,\n          details: { domain, client, key: keyName, scope: keyScope,\n                     hourly_count: hourlyCount, hourly_limit: hourlyLimit,\n                     hour_bucket: hourBucket,\n                     retry_after_minutes: 60 - now.getMinutes() }\n        }\n      }}];\n    }\n  }\n\n  // ── CHECK 2: AI daily budget ──\n  let todaySpend = 0;\n  let budget = 0;\n  if (isAI && costTableId) {\n    const today = now.toISOString().split('T')[0];\n    budget = AI_BUDGET[keyScope] || AI_BUDGET.standard;\n    const costResp = await this.helpers.httpRequest({\n      method: 'GET',\n      url: host + '/api/v1/data-tables/' + costTableId + '/rows?limit=250',\n      headers: { 'X-N8N-API-KEY': apiKey }, json: true, timeout: 5000\n    });\n    for (const row of (costResp.data || [])) {\n      if (row.date === today) todaySpend += parseFloat(row.est_cost_usd || 0);\n    }\n    if (todaySpend >= budget) {\n      return [{json: {\n        ...input, rate_limited: true,\n        error: {\n          type: 'budget_exceeded',\n          message: 'Daily AI budget exceeded: $' + todaySpend.toFixed(4) + ' / $' + budget.toFixed(2),\n          details: { today_spend: todaySpend, budget, domain, key: keyName, scope: keyScope }\n        }\n      }}];\n    }\n  }\n\n  // ── PASSED: Log counter row (non-blocking) ──\n  if (rlTableId) {\n    try {\n      await this.helpers.httpRequest({\n        method: 'POST',\n        url: host + '/api/v1/data-tables/' + rlTableId + '/rows',\n        headers: { 'X-N8N-API-KEY': apiKey, 'Content-Type': 'application/json' },\n        body: JSON.stringify({ data: [{ client, domain, hour: hourBucket, ts: now.toISOString() }] }),\n        timeout: 3000\n      });\n    } catch (e) { /* Non-blocking */ }\n  }\n\n  return [{json: {\n    ...input, rate_limited: false,\n    _rate_info: {\n      hourly_count: hourlyCount + 1, hourly_limit: hourlyLimit,\n      ...(isAI ? { ai_today_spend: todaySpend, ai_budget: budget } : {})\n    }\n  }}];\n\n} catch (e) {\n  return [{json: { ...input, rate_limited: false, _rate_info: { warning: 'Rate limit check failed: ' + e.message, fail_open: true } }}];\n}\n",
+          "mode": "runOnceForAllItems"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          550,
+          300
+        ],
+        "id": "rate-limit-check-v1",
+        "name": "Rate Limit Check"
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ JSON.stringify({ok:false,domain:$json.body?.domain||null,action:$json.body?.action||null,client:$json.body?.client||null,mode:\"sync\",meta:{request_id:null,execution_id:$execution.id,timestamp:new Date().toISOString()},data:null,error:$json.error}) }}",
+          "options": {
+            "responseCode": 429
+          }
+        },
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.1,
+        "position": [
+          770,
+          500
+        ],
+        "id": "rate-limit-fail-response",
+        "name": "Rate Limit Fail Response"
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "id": "rl1",
+                "leftValue": "={{ $json.rate_limited }}",
+                "rightValue": false,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "false"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        },
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.2,
+        "position": [
+          660,
+          300
+        ],
+        "id": "rate-limit-gate",
+        "name": "Rate Limit Gate"
+      },
+      {
+        "parameters": {
+          "jsCode": "// Schema Validator v1 — validates params against MCP schema table\n// Placed between Resolve Config and Resolve Gate\n// Only validates passthrough actions (handlers do their own validation)\nconst input = $input.first().json;\n\n// Pass through if resolution already failed\nif (!input.resolved) {\n  return [{json: input}];\n}\n\nconst {domain, action, params, config, actionConfig} = input;\n\n// Skip validation for handler-routed actions (handler does its own)\nif (config.handler_workflow_id) {\n  return [{json: input}];\n}\n\n// Skip if dry_run\nif (input.meta && input.meta.dry_run) {\n  return [{json: input}];\n}\n\n// Fetch schema for this domain+action\nconst schemaTableId = $vars.MCP_SCHEMA_TABLE_ID;\nif (!schemaTableId) {\n  return [{json: {...input, _schema_warn: 'no_schema_table'}}];\n}\n\nlet schemaRow = null;\ntry {\n  const host = $vars.N8N_HOST;\n  const apiKey = $vars.N8N_INTERNAL_API_KEY;\n  \n  // Fetch schemas (paginated in case of overflow)\n  let allSchemas = [], cursor = '', hasMore = true;\n  while (hasMore) {\n    const resp = await this.helpers.httpRequest({\n      url: host + '/api/v1/data-tables/' + schemaTableId + '/rows?limit=250' + (cursor ? '&cursor=' + cursor : ''),\n      headers: {'X-N8N-API-KEY': apiKey}, json: true, timeout: 5000\n    });\n    allSchemas.push(...(resp.data || []));\n    cursor = resp.nextCursor || '';\n    hasMore = !!resp.nextCursor && (resp.data || []).length > 0;\n  }\n  \n  // Normalize action format: \"anthropic.messages\" → also match \"messages\"\n  const actionShort = action.startsWith(domain + '.') ? action.slice(domain.length + 1) : action;\n  schemaRow = allSchemas.find(s => s.domain === domain && (s.action === action || s.action === actionShort));\n} catch(e) {\n  // Fail OPEN — if schema lookup fails, allow the request through\n  return [{json: {...input, _schema_warn: 'schema_fetch_failed: ' + e.message}}];\n}\n\n// No schema for this action — pass through (graceful degradation)\nif (!schemaRow || !schemaRow.param_schema) {\n  return [{json: {...input, _schema_warn: 'no_schema_defined'}}];\n}\n\n// Parse schema\nlet schema;\ntry {\n  schema = typeof schemaRow.param_schema === 'string' \n    ? JSON.parse(schemaRow.param_schema) \n    : schemaRow.param_schema;\n} catch(e) {\n  return [{json: {...input, _schema_warn: 'invalid_schema_json'}}];\n}\n\n// Validate required params\nconst required = schema.required || {};\nconst missingParams = [];\nconst invalidParams = [];\n\nfor (const [paramName, paramSpec] of Object.entries(required)) {\n  if (params[paramName] === undefined || params[paramName] === null) {\n    missingParams.push({param: paramName, expected: paramSpec});\n  }\n}\n\nif (missingParams.length > 0) {\n  const optional = schema.optional || {};\n  return [{json: {\n    resolved: false,\n    error: {\n      type: 'schema_validation_error',\n      message: 'Missing required params: ' + missingParams.map(p => p.param).join(', '),\n      details: {\n        missing: missingParams,\n        optional_params: Object.keys(optional),\n        example: schemaRow.example_request || null\n      }\n    },\n    domain, action, client: input.client, mode: input.mode, meta: input.meta\n  }}];\n}\n\n// All required params present — pass through with schema info attached\nreturn [{json: {...input, _schema_validated: true}}];\n"
+        },
+        "name": "Schema Validator",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1980,
+          300
+        ],
+        "id": "db84df70-2314-445b-8b21-b97b6718f7b7"
+      },
+      {
+        "name": "Call GitHub",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          2740,
+          620
+        ],
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $('Prepare Infra URLs').first().json._infra.handler_github }}",
+          "sendBody": true,
+          "bodyParameters": {
+            "parameters": []
+          },
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json) }}",
+          "options": {
+            "timeout": 30000,
+            "redirect": {
+              "redirect": {
+                "followRedirects": false
+              }
+            }
+          },
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "x-handler-secret",
+                "value": "={{ $('Prepare Infra URLs').first().json._infra.handler_secret }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        },
+        "id": "34d8378d-6fa5-4e32-9fc6-a1b36327a6a7"
+      },
+      {
+        "name": "Call Handover",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          2740,
+          740
+        ],
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $('Prepare Infra URLs').first().json._infra.handler_handover }}",
+          "sendBody": true,
+          "bodyParameters": {
+            "parameters": []
+          },
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json) }}",
+          "options": {
+            "timeout": 30000,
+            "redirect": {
+              "redirect": {
+                "followRedirects": false
+              }
+            }
+          },
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "x-handler-secret",
+                "value": "={{ $('Prepare Infra URLs').first().json._infra.handler_secret }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        },
+        "id": "call-handover-node"
+      },
+      {
+        "parameters": {
+          "jsCode": "// Track Resolve Failure (ADR-001 Phase 2)\n// Fires when registry lookup fails (e.g., \"No registry entry for domain X client Y\")\nconst data = $input.first().json;\nconst infra = $('Prepare Infra URLs').first().json._infra || {};\nconst domain = data.domain || 'unknown';\nconst client = data.client || 'unknown';\n\nif (infra.n8n_host && domain !== 'unknown') {\n  try {\n    const COUNTER_TABLE = $vars.RATE_LIMIT_TABLE_ID || 'FsTInkNFnck4KNrp';\n    const now = new Date();\n    const fiveMinAgo = new Date(now.getTime() - 5 * 60 * 1000).toISOString();\n    \n    await this.helpers.httpRequest({\n      method: 'POST',\n      url: infra.n8n_host + '/api/v1/data-tables/' + COUNTER_TABLE + '/rows',\n      headers: {'X-N8N-API-KEY': infra.api_key, 'Content-Type': 'application/json'},\n      body: JSON.stringify({data: [{\n        domain: domain, client: client,\n        error_type: (data.error && data.error.type) || 'resolve_error',\n        error_message: (data.error && data.error.message) || 'unknown',\n        timestamp: now.toISOString(), source: 'resolve'\n      }]})\n    });\n    \n    const counters = await this.helpers.httpRequest({\n      method: 'GET', url: infra.n8n_host + '/api/v1/data-tables/' + COUNTER_TABLE + '/rows?limit=250',\n      headers: {'X-N8N-API-KEY': infra.api_key}, json: true\n    });\n    const recent = (counters.data || []).filter(r => r.domain === domain && r.timestamp && r.timestamp > fiveMinAgo);\n    const alertKey = 'alert_' + domain;\n    const recentAlerts = (counters.data || []).filter(r => r.domain === alertKey && r.timestamp && r.timestamp > fiveMinAgo);\n    \n    if (recent.length >= 3 && recentAlerts.length === 0) {\n      try {\n        const slackUrl = infra.n8n_host + '/webhook/handler-google-suite';\n        await this.helpers.httpRequest({\n          method: 'POST', url: slackUrl,\n          headers: {'x-handler-secret': infra.handler_secret, 'Content-Type': 'application/json'},\n          body: JSON.stringify({\n            domain: 'slack', action: 'post_message', client: 'ascend',\n            params: { channel: '#n8n-alerts',\n              text: ':rotating_light: *Gateway Routing Failure*\\n*Domain:* ' + domain + '\\n*Failures:* ' + recent.length + ' in 5 min\\n*Error:* ' + ((data.error && data.error.message) || 'unknown') + '\\n*Client:* ' + client\n            }\n          })\n        });\n      } catch(e) {}\n      try {\n        await this.helpers.httpRequest({\n          method: 'POST', url: infra.n8n_host + '/api/v1/data-tables/' + COUNTER_TABLE + '/rows',\n          headers: {'X-N8N-API-KEY': infra.api_key, 'Content-Type': 'application/json'},\n          body: JSON.stringify({data: [{domain: alertKey, timestamp: now.toISOString(), source: 'alert_sent'}]})\n        });\n      } catch(e) {}\n    }\n  } catch(e) {}\n}\n\nreturn [$input.first()];\n"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2000,
+          500
+        ],
+        "id": "failure-tracker-001",
+        "name": "Track Resolve Failure"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $('Prepare Infra URLs').first().json._infra.handler_bedrock }}",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json) }}",
+          "options": {
+            "timeout": 60000
+          },
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "x-handler-secret",
+                "value": "={{ $('Prepare Infra URLs').first().json._infra.handler_secret }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1600,
+          1200
+        ],
+        "id": "6414dda1-1732-4a29-8daa-fcf7926c414e",
+        "name": "Call Bedrock"
+      },
+      {
+        "name": "Call Browser Orchestrator",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          2740,
+          1400
+        ],
+        "parameters": {
+          "method": "POST",
+          "url": "https://mmurawala.app.n8n.cloud/webhook/browser-orchestrator",
+          "sendBody": true,
+          "bodyParameters": {
+            "parameters": []
+          },
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json) }}",
+          "options": {
+            "timeout": 180000,
+            "redirect": {
+              "redirect": {
+                "followRedirects": false
+              }
+            }
+          },
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "x-internal-secret",
+                "value": "={{ $('Prepare Infra URLs').first().json._infra.handler_secret }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        },
+        "id": "call-browser-orchestrator"
+      }
+    ],
+    "connections": {
+      "Webhook": {
+        "main": [
+          [
+            {
+              "node": "Auth Check",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Auth Check": {
+        "main": [
+          [
+            {
+              "node": "Auth Gate",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Auth Gate": {
+        "main": [
+          [
+            {
+              "node": "Rate Limit Check",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Auth Fail Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Input Validator": {
+        "main": [
+          [
+            {
+              "node": "Validation Gate",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Validation Gate": {
+        "main": [
+          [
+            {
+              "node": "Prepare Infra URLs",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Validation Fail Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Registry Lookup": {
+        "main": [
+          [
+            {
+              "node": "Action Lookup",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Action Lookup": {
+        "main": [
+          [
+            {
+              "node": "Resolve Config",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Resolve Config": {
+        "main": [
+          [
+            {
+              "node": "Schema Validator",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Resolve Gate": {
+        "main": [
+          [
+            {
+              "node": "Route Decision",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Track Resolve Failure",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Route Decision": {
+        "main": [
+          [
+            {
+              "node": "Prepare Handler Input",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Build Dynamic Request",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Format Handler Response": {
+        "main": [
+          [
+            {
+              "node": "Send Handler Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Dynamic Request": {
+        "main": [
+          [
+            {
+              "node": "Passthrough Validation",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Format Passthrough Response": {
+        "main": [
+          [
+            {
+              "node": "Send Passthrough Response",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Is AI Domain?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Prepare Handler Input": {
+        "main": [
+          [
+            {
+              "node": "Handler Switch",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Handler Switch": {
+        "main": [
+          [
+            {
+              "node": "Call Marketing Ads",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Analytics",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call CRM",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Google Suite",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call GitHub",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Handover",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Bedrock",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Browser Orchestrator",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Marketing Ads": {
+        "main": [
+          [
+            {
+              "node": "Format Handler Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Analytics": {
+        "main": [
+          [
+            {
+              "node": "Format Handler Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call CRM": {
+        "main": [
+          [
+            {
+              "node": "Format Handler Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Google Suite": {
+        "main": [
+          [
+            {
+              "node": "Format Handler Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Passthrough Validation": {
+        "main": [
+          [
+            {
+              "node": "Send Validation Error",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "API Request (Code)",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Is AI Domain?": {
+        "main": [
+          [
+            {
+              "node": "Log AI Cost",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          []
+        ]
+      },
+      "API Request (Code)": {
+        "main": [
+          [
+            {
+              "node": "Format Passthrough Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Prepare Infra URLs": {
+        "main": [
+          [
+            {
+              "node": "Registry Lookup",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Rate Limit Check": {
+        "main": [
+          [
+            {
+              "node": "Rate Limit Gate",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Rate Limit Gate": {
+        "main": [
+          [
+            {
+              "node": "Input Validator",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Rate Limit Fail Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Schema Validator": {
+        "main": [
+          [
+            {
+              "node": "Resolve Gate",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call GitHub": {
+        "main": [
+          [
+            {
+              "node": "Format Handler Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Handover": {
+        "main": [
+          [
+            {
+              "node": "Format Handler Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Track Resolve Failure": {
+        "main": [
+          [
+            {
+              "node": "Resolve Fail Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Bedrock": {
+        "main": [
+          [
+            {
+              "node": "Format Handler Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Browser Orchestrator": {
+        "main": [
+          [
+            {
+              "node": "Format Handler Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "callerPolicy": "workflowsFromSameOwner",
+      "errorWorkflow": "YSUNsXBHe0fPA2nc",
+      "availableInMCP": false,
+      "timeSavedMode": "fixed",
+      "binaryMode": "separate"
+    }
+  }
+}
