@@ -1,0 +1,94 @@
+{
+  "snapshot_at": "2026-03-23T02:14:30.876Z",
+  "reason": "Pre-modification snapshot: No reason provided",
+  "session_id": "unknown-session",
+  "workflow": {
+    "name": "🎯 GTM Domain Agent",
+    "id": "jbSdXj5lpHRjl5HM",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "gtm-domain-agent",
+          "authentication": "headerAuth",
+          "responseMode": "responseNode",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2.1,
+        "position": [
+          0,
+          0
+        ],
+        "id": "6aca0034-851a-4c57-9b4e-386c291fff66",
+        "name": "Webhook",
+        "webhookId": "2a4cf789-7793-431a-9a37-aeb8025966b4",
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "yyHKK186zwYZXlFW",
+            "name": "Header Auth account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "// GTM Domain Agent - Core Logic\nconst input = $input.first().json;\nconst body = input.body || input;\nconst goal = body.goal;\nconst tenant_id = body.tenant_id;\n\nif (!goal || !tenant_id) {\n  throw new Error('Missing required fields: goal and tenant_id');\n}\n\nconst N8N_BASE = 'https://mmurawala.app.n8n.cloud';\nconst N8N_API_KEY = $vars.N8N_API_KEY;\nconst ANTHROPIC_API_KEY = $vars.ANTHROPIC_API_KEY_N8N;\nconst GW_MASTER_KEY = $vars.key_master;\nconst ACTION_MAP_TABLE = 'nTBOiE9byj3KcHVQ';\nconst GW_PATH = '/webhook/orchestrate-v2';\nconst MODEL = 'claude-sonnet-4-6';\nconst MAX_TURNS = 15;\n\nconst actionMapResp = await this.helpers.httpRequest({\n  method: 'GET',\n  url: `${N8N_BASE}/api/v1/data-tables/${ACTION_MAP_TABLE}/rows?limit=200`,\n  headers: { 'X-N8N-API-KEY': N8N_API_KEY },\n  json: true\n});\nconst actionMap = actionMapResp.data || actionMapResp.rows || [];\n\nconst tools = [\n  { name: 'list_domain_actions', description: 'Lists all available GTM domain actions from the action map.', input_schema: { type: 'object', properties: {}, required: [] } },\n  { name: 'ascend_gateway', description: 'Executes a GTM action through the Ascend Gateway.', input_schema: { type: 'object', properties: { api_name: { type: 'string' }, action: { type: 'string' }, params: { type: 'object' } }, required: ['api_name', 'action'] } },\n  { name: 'think', description: 'Think through complex problems step by step.', input_schema: { type: 'object', properties: { thought: { type: 'string' } }, required: ['thought'] } }\n];\n\nasync function executeTool(name, toolInput) {\n  if (name === 'list_domain_actions') return JSON.stringify(actionMap.map(r => ({ api_name: r.api_name, action: r.action, description: r.description || '' })));\n  if (name === 'think') return JSON.stringify({ noted: true, thought: toolInput.thought });\n  if (name === 'ascend_gateway') {\n    try {\n      const gwResp = await this.helpers.httpRequest({ method: 'POST', url: `${N8N_BASE}${GW_PATH}`, headers: { 'Content-Type': 'application/json', 'x-api-key': GW_MASTER_KEY }, body: { api_name: toolInput.api_name, action: toolInput.action, tenant_id, params: toolInput.params || {} }, json: true });\n      return JSON.stringify(gwResp);\n    } catch(e) { return JSON.stringify({ error: e.message }); }\n  }\n  return JSON.stringify({ error: `Unknown tool: ${name}` });\n}\n\nconst systemPrompt = `You are the GTM Domain Agent. Help users accomplish GTM tasks by discovering and executing actions through the Ascend Gateway.\\n\\nWorkflow:\\n1. Use list_domain_actions to see available actions\\n2. Use think to plan your approach\\n3. Use ascend_gateway to execute actions\\n4. Summarize results clearly\\n\\nTenant: ${tenant_id}. Be concise and action-oriented.`;\n\nlet messages = [{ role: 'user', content: goal }];\nlet finalResponse = '';\n\nfor (let turn = 0; turn < MAX_TURNS; turn++) {\n  const result = await this.helpers.httpRequest({ method: 'POST', url: 'https://api.anthropic.com/v1/messages', headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' }, body: { model: MODEL, max_tokens: 4096, system: systemPrompt, tools, messages }, json: true });\n  if (result.error) throw new Error(`Anthropic error: ${JSON.stringify(result.error)}`);\n  messages.push({ role: 'assistant', content: result.content });\n  if (result.stop_reason === 'end_turn') { finalResponse = result.content.filter(b => b.type === 'text').map(b => b.text).join('\\n'); break; }\n  const toolUseBlocks = result.content.filter(b => b.type === 'tool_use');\n  if (toolUseBlocks.length === 0) { finalResponse = result.content.filter(b => b.type === 'text').map(b => b.text).join('\\n'); break; }\n  const toolResults = [];\n  for (const tu of toolUseBlocks) { const tr = await executeTool.call(this, tu.name, tu.input); toolResults.push({ type: 'tool_result', tool_use_id: tu.id, content: tr }); }\n  messages.push({ role: 'user', content: toolResults });\n}\n\nreturn [{ json: { response: finalResponse, tenant_id, goal, turns: messages.length } }];"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          208,
+          0
+        ],
+        "id": "35212c47-7eb0-46b8-afb2-ca06ecd340c0",
+        "name": "Agent Core"
+      },
+      {
+        "parameters": {
+          "options": {}
+        },
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.5,
+        "position": [
+          416,
+          0
+        ],
+        "id": "c2cc1f79-7ab2-4b21-aed1-e6d17121d27a",
+        "name": "Respond to Webhook"
+      }
+    ],
+    "connections": {
+      "Webhook": {
+        "main": [
+          [
+            {
+              "node": "Agent Core",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Agent Core": {
+        "main": [
+          [
+            {
+              "node": "Respond to Webhook",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "binaryMode": "separate",
+      "availableInMCP": false,
+      "timeSavedMode": "fixed",
+      "errorWorkflow": "4l0H7MgNyOHbYPbO",
+      "callerPolicy": "workflowsFromSameOwner"
+    }
+  }
+}
