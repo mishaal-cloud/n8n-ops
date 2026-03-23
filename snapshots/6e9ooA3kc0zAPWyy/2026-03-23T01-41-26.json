@@ -1,0 +1,990 @@
+{
+  "snapshot_at": "2026-03-23T01:41:26.781Z",
+  "reason": "Pre-code_patch: Populate _v2.meta.mccId from config-driven params so Call Google Ads HTTP node reads correct login-customer-id via existing expression",
+  "session_id": "unknown",
+  "workflow": {
+    "name": "Gateway: Marketing Ads",
+    "id": "6e9ooA3kc0zAPWyy",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {},
+        "id": "f4a1b2c3-1001-4e5f-9a0b-1c2d3e4f5a6b",
+        "name": "Execute Workflow Trigger",
+        "type": "n8n-nodes-base.executeWorkflowTrigger",
+        "typeVersion": 1,
+        "position": [
+          0,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "// Build API Request — v2 Contract (Ads Handler)\n// FIX: Added 'const params = input.params || {}' — was missing, caused ReferenceError\n\nconst input = $input.first().json;\nconst domain = input.domain || input.api;\nconst action = input.action;\nconst client = input.client || $vars.DEFAULT_TEST_TENANT || 'kahuna';\nconst config = input.config || {};\nconst params = input.params || {};\n\nconst domainMap = { google_ads:'google_ads', meta_ads:'meta_ads', linkedin_ads:'linkedin_ads', amazon_ads:'amazon_ads', x_ads:'x_ads', pinterest_ads:'pinterest_ads', reddit_ads:'reddit_ads', google_ad_manager:'google_ad_manager', microsoft_ads:'microsoft_ads' };\nconst apiKey = domainMap[domain] || domain;\n\nconst serviceBody = Object.assign({}, params);\n['customerId','customer_id','mccId','devToken','date_range','_handler_secret'].forEach(k => delete serviceBody[k]);\n\nconst liAcctId = params.ad_account_id || $vars['LINKEDIN_AD_ACCOUNT_ID'] || '';\nconst liNow = new Date();\nconst liAnalyticsUrl = `/adAnalytics?q=analytics&pivot=${params.pivot||'CAMPAIGN'}&dateRange=(start:(year:${params.startYear||liNow.getFullYear()},month:${params.startMonth||1},day:1),end:(year:${liNow.getFullYear()},month:${liNow.getMonth()+1},day:${liNow.getDate()}))&timeGranularity=${params.timeGranularity||'MONTHLY'}&fields=${params.fields||'impressions,clicks,costInLocalCurrency'}&accounts=List(urn%3Ali%3AsponsoredAccount%3A${liAcctId})`;\n\nconst endpoints = {\n  google_ads: { base_url: config.base_url||'https://googleads.googleapis.com', actions: {\n    campaigns:{method:'POST',path:`/v23.1/customers/${params.customerId||params.customer_id||'{customer_id}'}/googleAds:search`,body:{query:params.gaql||`SELECT campaign.id,campaign.name,campaign.status,metrics.impressions,metrics.clicks,metrics.cost_micros FROM campaign WHERE segments.date DURING ${params.date_range||'LAST_7_DAYS'}`}},\n    ad_groups:{method:'POST',path:`/v23.1/customers/${params.customerId||params.customer_id||'{customer_id}'}/googleAds:search`,body:{query:params.gaql||`SELECT ad_group.id,ad_group.name,ad_group.status,ad_group.campaign,metrics.impressions,metrics.clicks FROM ad_group WHERE segments.date DURING ${params.date_range||'LAST_7_DAYS'}`}},\n    keywords:{method:'POST',path:`/v23.1/customers/${params.customerId||params.customer_id||'{customer_id}'}/googleAds:search`,body:{query:params.gaql||`SELECT ad_group_criterion.keyword.text,ad_group_criterion.keyword.match_type,metrics.impressions,metrics.clicks,metrics.cost_micros FROM keyword_view WHERE segments.date DURING ${params.date_range||'LAST_7_DAYS'}`}},\n    custom_query:{method:'POST',path:`/v23.1/customers/${params.customerId||params.customer_id||'{customer_id}'}/googleAds:search`,body:{query:params.gaql||params.query}},\n    mutate:{method:'POST',path:`/v23.1/customers/${params.customerId||params.customer_id||'{customer_id}'}/googleAds:mutate`,body:{mutateOperations:params.operations||[]}},\n    benchmarks:{method:'POST',path:`/v23.1/customers/${params.customerId||params.customer_id||'{customer_id}'}:generateBenchmarksMetrics`,body:serviceBody},\n    audience_definition:{method:'POST',path:`/v23.1/customers/${params.customerId||params.customer_id||'{customer_id}'}:generateAudienceDefinition`,body:serviceBody},\n    creator_insights:{method:'POST',path:`/v23.1/customers/${params.customerId||params.customer_id||'{customer_id}'}:generateCreatorInsights`,body:serviceBody}\n  }},\n  meta_ads: { base_url: config.base_url||'https://graph.facebook.com/v25.0', actions: {\n    campaigns:{method:'GET',path:`/act_${params.ad_account_id||$vars.META_ADS_ACCOUNT_ID||'{ad_account_id}'}/campaigns`,body:null},\n    ad_sets:{method:'GET',path:`/act_${params.ad_account_id||$vars.META_ADS_ACCOUNT_ID||'{ad_account_id}'}/adsets`,body:null},\n    insights:{method:'GET',path:`/act_${params.ad_account_id||$vars.META_ADS_ACCOUNT_ID||'{ad_account_id}'}/insights`,body:null}\n  }},\n  amazon_ads: { base_url: config.base_url||'https://advertising-api.amazon.com', actions: {\n    list_profiles:{method:'GET',path:'/v2/profiles',body:null}, campaigns:{method:'GET',path:'/v2/sp/campaigns',body:null},\n    ad_groups:{method:'GET',path:'/v2/sp/adGroups',body:null}, keywords:{method:'GET',path:'/v2/sp/keywords',body:null},\n    report:{method:'POST',path:'/reporting/reports',body:params.report_config||{}}\n  }},\n  pinterest_ads: { base_url: config.base_url||'https://api.pinterest.com/v5', actions: {\n    ad_accounts:{method:'GET',path:'/ad_accounts',body:null},\n    campaigns:{method:'GET',path:`/ad_accounts/${params.ad_account_id||'{ad_account_id}'}/campaigns`,body:null},\n    ad_groups:{method:'GET',path:`/ad_accounts/${params.ad_account_id||'{ad_account_id}'}/ad_groups`,body:null},\n    analytics:{method:'GET',path:`/ad_accounts/${params.ad_account_id||'{ad_account_id}'}/campaigns/analytics`,body:null}\n  }},\n  x_ads: { base_url: config.base_url||'https://ads-api.x.com/12', actions: {\n    accounts:{method:'GET',path:'/accounts',body:null},\n    campaigns:{method:'GET',path:`/accounts/${params.account_id||'{account_id}'}/campaigns`,body:null},\n    line_items:{method:'GET',path:`/accounts/${params.account_id||'{account_id}'}/line_items`,body:null},\n    stats:{method:'GET',path:`/stats/accounts/${params.account_id||'{account_id}'}`,body:null}\n  }},\n  reddit_ads: { base_url: config.base_url||'https://ads-api.reddit.com/api/v2.0', actions: {\n    accounts:{method:'GET',path:'/accounts',body:null},\n    campaigns:{method:'GET',path:`/accounts/${params.account_id||'{account_id}'}/campaigns`,body:null},\n    ad_groups:{method:'GET',path:`/accounts/${params.account_id||'{account_id}'}/adgroups`,body:null},\n    report:{method:'GET',path:`/accounts/${params.account_id||'{account_id}'}/reports`,body:null}\n  }},\n  google_ad_manager: { base_url: config.base_url||'https://admanager.googleapis.com/v1', actions: {\n    networks:{method:'GET',path:'/networks',body:null},\n    orders:{method:'GET',path:`/networks/${params.network_code||'{network_code}'}/orders`,body:null},\n    line_items:{method:'GET',path:`/networks/${params.network_code||'{network_code}'}/lineItems`,body:null},\n    ad_units:{method:'GET',path:`/networks/${params.network_code||'{network_code}'}/adUnits`,body:null},\n    report:{method:'POST',path:`/networks/${params.network_code||'{network_code}'}/reports:run`,body:params.report_body||{}}\n  }},\n  microsoft_ads: { base_url:'https://campaign.api.bingads.microsoft.com', actions: {\n    campaigns:{method:'POST',path:'/CampaignManagement/v13/Campaigns/QueryByAccountId',body:{AccountId:params.account_id||params.AccountId||''}},\n    ad_groups:{method:'POST',path:'/CampaignManagement/v13/AdGroups/QueryByCampaignId',body:{CampaignId:params.campaign_id||params.CampaignId||''}},\n    ads:{method:'POST',path:'/CampaignManagement/v13/Ads/QueryByAdGroupId',body:{AdGroupId:params.ad_group_id||params.AdGroupId||''}},\n    keywords:{method:'POST',path:'/CampaignManagement/v13/Keywords/QueryByAdGroupId',body:{AdGroupId:params.ad_group_id||params.AdGroupId||''}},\n    accounts:{method:'POST',path:'/CustomerManagement/v13/Accounts/Search',body:{Predicate:params.predicate||null,Ordering:null,PageInfo:{Index:0,Size:100}}},\n    report:{method:'POST',path:'/Reporting/v13/GenerateReport/Submit',body:params.report_request||{}}\n  }},\n  linkedin_ads: { base_url: config.base_url||'https://api.linkedin.com/rest', actions: {\n    campaigns:{method:'GET',path:`/adAccounts/${params.ad_account_id||$vars['LINKEDIN_AD_ACCOUNT_ID']}/adCampaigns?q=search&search=(status:(values:List(${params.status||'ACTIVE'})))`,body:null,query:{}},\n    analytics:{method:'GET',path:liAnalyticsUrl,body:null,query:{}},\n    creatives:{method:'GET',path:`/adAccounts/${params.ad_account_id||$vars['LINKEDIN_AD_ACCOUNT_ID']}/creatives`,body:null,query:{q:'criteria'}},\n    revenue_attribution:{method:'GET',path:'/adAnalytics',body:null,query:{q:'attributedRevenueMetrics',accounts:`List(urn:li:sponsoredAccount:${params.ad_account_id||$vars['LINKEDIN_AD_ACCOUNT_ID']})`}},\n    predictive_audiences:{method:'POST',path:'/predictiveAudiences',body:params},\n    company_intelligence:{method:'GET',path:'/companyIntelligence',body:null}\n  }}\n};\n\nconst apiConfig = endpoints[apiKey];\nif (!apiConfig) return [{json:{ok:false,data:null,error:{type:'handler_error',message:`Ads handler: unknown domain '${domain}'. Supported: ${Object.keys(endpoints).join(', ')}`,details:{domain}},_v2:{domain,action,client,mode:input.mode,meta:input.meta}}}];\n\nconst endpoint = apiConfig.actions[action];\nif (!endpoint) return [{json:{ok:false,data:null,error:{type:'handler_error',message:`Ads handler: unknown action '${action}' for ${domain}. Available: ${Object.keys(apiConfig.actions).join(', ')}`,details:{domain,action}},_v2:{domain,action,client,mode:input.mode,meta:input.meta}}}];\n\n// === DOMAIN-SPECIFIC HEADERS (config-driven from tenant_metadata params) ===\nconst headers = {};\nif (apiKey==='google_ads') {\n  headers['developer-token'] = params.developer_token || $vars.GOOGLE_ADS_DEVELOPER_TOKEN || '';\n  headers['login-customer-id'] = params.login_customer_id || $vars.GOOGLE_ADS_LOGIN_CUSTOMER_ID || '';\n}\nif (apiKey==='microsoft_ads') { headers['DeveloperToken']=params.developer_token||$vars['MICROSOFT_ADS_DEVELOPER_TOKEN']||''; headers['CustomerId']=params.customer_id||$vars['MICROSOFT_ADS_CUSTOMER_ID']||''; headers['AccountId']=params.account_id||$vars['MICROSOFT_ADS_ACCOUNT_ID']||''; }\nif (apiKey==='linkedin_ads') { headers['Linkedin-Version']='202602'; headers['X-Restli-Protocol-Version']='2.0.0'; headers['X-RestLi-Method']='FINDER'; }\n\nconst queryString = endpoint.query && Object.keys(endpoint.query).length ? '?'+Object.entries(endpoint.query).filter(([,v])=>v!==undefined&&v!==null&&v!=='').map(([k,v])=>`${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&') : '';\n\nreturn [{json:{method:endpoint.method,url:apiConfig.base_url+endpoint.path+queryString,query:{},body:endpoint.body||{},headers,_v2:{domain,action,client,mode:input.mode,meta:input.meta}}}];"
+        },
+        "id": "f4a1b2c3-1002-4e5f-9a0b-1c2d3e4f5a6b",
+        "name": "Build API Request",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          272,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const input=$input.first().json;const v2=input._v2||$('Build API Request').first().json._v2||{};const statusCode=input.statusCode||null;const headers=input.headers||{};const body=input.body!==undefined?input.body:input;if(statusCode!==null&&typeof statusCode==='number'){if(statusCode>=200&&statusCode<300)return[{json:{ok:true,data:body,error:null}}];const errorBody=body;let errorMsg='API returned error';if(typeof errorBody==='object'&&errorBody!==null){errorMsg=errorBody.error?.message||errorBody.error?.error_description||errorBody.error_description||errorBody.message||(errorBody.error&&typeof errorBody.error==='string'?errorBody.error:'')||JSON.stringify(errorBody).slice(0,500);}else if(typeof errorBody==='string'){errorMsg=errorBody.slice(0,500);}let errorType='api_error';if(statusCode===401||statusCode===403)errorType='auth_error';else if(statusCode===400)errorType='schema_error';else if(statusCode===404||statusCode===422)errorType='logic_error';else if(statusCode>=500)errorType='system_error';return[{json:{ok:false,data:null,error:{type:errorType,message:errorMsg,status:statusCode,details:{status_code:statusCode,domain:v2.domain,action:v2.action,response_headers:Object.keys(headers).join(', '),request_id:headers['request-id']||headers['x-request-id']||null,raw:JSON.stringify(errorBody).slice(0,500)}}}}];}if(input.error||(input.statusCode&&input.statusCode>=400))return[{json:{ok:false,data:null,error:{type:'api_error',message:input.message||input.error?.message||input.error||'API call failed',details:{status_code:input.statusCode||500,domain:v2.domain,action:v2.action,raw:JSON.stringify(input).slice(0,500)}}}}];if(input.ok===false)return[{json:input}];return[{json:{ok:true,data:input,error:null}}];"
+        },
+        "id": "f4a1b2c3-1004-4e5f-9a0b-1c2d3e4f5a6b",
+        "name": "Format Response",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          784,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "handler-marketing-ads",
+          "responseMode": "responseNode",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2,
+        "position": [
+          -208,
+          512
+        ],
+        "id": "4c42fb27-5d2b-4aa8-8085-4d7ca908db12",
+        "name": "Webhook Trigger",
+        "webhookId": "a149fbfb-0c2e-4b0f-a712-044861418da4"
+      },
+      {
+        "parameters": {
+          "jsCode": "const input=$input.first().json;const data=input.body||input;const headers=input.headers||{};const secret=headers['x-handler-secret']||data._handler_secret||'';const EXPECTED=$vars.GW_HANDLER_INTERNAL_SECRET;if(secret!==EXPECTED&&headers['x-handler-secret']!==EXPECTED){const isWebhook=!!input.headers;if(isWebhook)return[{json:{error:true,message:'Unauthorized handler call',status_code:403}}];}if(data._handler_secret)delete data._handler_secret;return[{json:data}];"
+        },
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          0,
+          512
+        ],
+        "id": "88eb3b0d-e778-48f9-9d1d-b7557b3fad34",
+        "name": "Normalize Input"
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "loose"
+            },
+            "conditions": [
+              {
+                "id": "8c05c43e-a914-4473-a71a-6653e6339eef",
+                "leftValue": "={{ $json.error }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "equals"
+                }
+              }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        },
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.2,
+        "position": [
+          208,
+          512
+        ],
+        "id": "3465f87c-aa5b-4c13-811a-8969379d5531",
+        "name": "Auth Gate"
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ JSON.stringify($json) }}",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.1,
+        "position": [
+          400,
+          656
+        ],
+        "id": "abb60166-fcae-4b78-8227-f7786eb67311",
+        "name": "Respond Error"
+      },
+      {
+        "parameters": {
+          "rules": {
+            "values": [
+              {
+                "conditions": {
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json._v2.domain }}",
+                      "rightValue": "google_ads",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and",
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  }
+                },
+                "renameOutput": true,
+                "outputKey": "Google Ads"
+              },
+              {
+                "conditions": {
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json._v2.domain }}",
+                      "rightValue": "meta_ads",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and",
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  }
+                },
+                "renameOutput": true,
+                "outputKey": "Meta Ads"
+              },
+              {
+                "conditions": {
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json._v2.domain }}",
+                      "rightValue": "linkedin_ads",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and",
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  }
+                },
+                "renameOutput": true,
+                "outputKey": "LinkedIn Ads"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json._v2.domain }}",
+                      "rightValue": "amazon_ads",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "Amazon Ads"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json._v2.domain }}",
+                      "rightValue": "pinterest_ads",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "Pinterest Ads"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json._v2.domain }}",
+                      "rightValue": "x_ads",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "X Ads"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json._v2.domain }}",
+                      "rightValue": "reddit_ads",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "Reddit Ads"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json._v2.domain }}",
+                      "rightValue": "google_ad_manager",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "Google Ad Manager"
+              },
+              {
+                "conditions": {
+                  "options": {
+                    "caseSensitive": true,
+                    "leftValue": "",
+                    "typeValidation": "loose"
+                  },
+                  "conditions": [
+                    {
+                      "leftValue": "={{ $json._v2.domain }}",
+                      "rightValue": "microsoft_ads",
+                      "operator": {
+                        "type": "string",
+                        "operation": "equals"
+                      }
+                    }
+                  ],
+                  "combinator": "and"
+                },
+                "renameOutput": true,
+                "outputKey": "Microsoft Ads"
+              }
+            ]
+          },
+          "options": {
+            "fallbackOutput": "extra"
+          }
+        },
+        "id": "domain-switch",
+        "name": "Domain Switch",
+        "type": "n8n-nodes-base.switch",
+        "typeVersion": 3.2,
+        "position": [
+          528,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "method": "={{ $json.method }}",
+          "url": "={{ $json.url }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "googleAdsOAuth2Api",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "name": "developer-token",
+                "value": "={{ $vars.GOOGLE_ADS_DEVELOPER_TOKEN || '' }}"
+              },
+              {
+                "name": "login-customer-id",
+                "value": "={{ $json._v2?.meta?.mccId || $vars.GOOGLE_ADS_ACCOUNT_ID || '' }}"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.body || {}) }}",
+          "options": {
+            "timeout": 30000,
+            "response": {
+              "response": {
+                "neverError": true,
+                "fullResponse": true
+              }
+            }
+          }
+        },
+        "id": "call-gads",
+        "name": "Call Google Ads",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          784,
+          160
+        ],
+        "credentials": {
+          "googleAdsOAuth2Api": {
+            "id": "euQhyKgs68cdwZvF",
+            "name": "GOOGLE_ADS_OAUTH_ACCOUNT"
+          }
+        },
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "method": "={{ $json.method }}",
+          "url": "={{ $json.url }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "oAuth2Api",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.body || {}) }}",
+          "options": {
+            "timeout": 30000,
+            "response": {
+              "response": {
+                "neverError": true,
+                "fullResponse": true
+              }
+            }
+          }
+        },
+        "id": "call-meta",
+        "name": "Call Meta Ads",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          784,
+          304
+        ],
+        "credentials": {
+          "oAuth2Api": {
+            "id": "CPTuhbjwMAomNhKA",
+            "name": "META_ADS_OAUTH"
+          }
+        },
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "method": "={{ $json.method }}",
+          "url": "={{ $json.url }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "oAuth2Api",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "name": "Linkedin-Version",
+                "value": "={{ $json.headers?.['Linkedin-Version'] || '202601' }}"
+              },
+              {
+                "name": "X-Restli-Protocol-Version",
+                "value": "={{ $json.headers?.['X-Restli-Protocol-Version'] || '2.0.0' }}"
+              },
+              {
+                "name": "X-RestLi-Method",
+                "value": "FINDER"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.body || {}) }}",
+          "options": {
+            "timeout": 30000,
+            "response": {
+              "response": {
+                "neverError": true,
+                "fullResponse": true
+              }
+            }
+          }
+        },
+        "id": "call-li",
+        "name": "Call LinkedIn Ads",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          784,
+          464
+        ],
+        "credentials": {
+          "oAuth2Api": {
+            "id": "h93emJewHmUE1d6O",
+            "name": "LINKEDIN_ADS_OAUTH"
+          }
+        },
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "method": "={{ $json.method }}",
+          "url": "={{ $json.url }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "oAuth2Api",
+          "sendHeaders": true,
+          "specifyHeaders": "json",
+          "jsonHeaders": "={{ JSON.stringify($json.headers || {}) }}",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.body || {}) }}",
+          "options": {
+            "response": {
+              "response": {
+                "neverError": true
+              }
+            }
+          }
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          784,
+          624
+        ],
+        "name": "Call Amazon Ads",
+        "credentials": {
+          "oAuth2Api": {
+            "id": "ttftQPEdHE5UihlG",
+            "name": "AMAZON_ADS_OAUTH"
+          }
+        },
+        "onError": "continueRegularOutput",
+        "id": "137d47ab-4f39-4634-b45f-ab3b145143e2"
+      },
+      {
+        "parameters": {
+          "method": "={{ $json.method }}",
+          "url": "={{ $json.url }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "oAuth2Api",
+          "sendHeaders": true,
+          "specifyHeaders": "json",
+          "jsonHeaders": "={{ JSON.stringify($json.headers || {}) }}",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.body || {}) }}",
+          "options": {
+            "response": {
+              "response": {
+                "neverError": true
+              }
+            }
+          }
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          784,
+          784
+        ],
+        "name": "Call Pinterest Ads",
+        "credentials": {
+          "oAuth2Api": {
+            "id": "XJ0qPer0vYnW5TDd",
+            "name": "PINTEREST_ADS_OAUTH"
+          }
+        },
+        "onError": "continueRegularOutput",
+        "id": "7486dff5-e083-4801-a543-50192eebbebc"
+      },
+      {
+        "parameters": {
+          "method": "={{ $json.method }}",
+          "url": "={{ $json.url }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "oAuth2Api",
+          "sendHeaders": true,
+          "specifyHeaders": "json",
+          "jsonHeaders": "={{ JSON.stringify($json.headers || {}) }}",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.body || {}) }}",
+          "options": {
+            "response": {
+              "response": {
+                "neverError": true
+              }
+            }
+          }
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          784,
+          944
+        ],
+        "name": "Call X Ads",
+        "credentials": {
+          "oAuth2Api": {
+            "id": "cWUVHKbznJah2nYD",
+            "name": "X_ADS_OAUTH"
+          }
+        },
+        "onError": "continueRegularOutput",
+        "id": "3080bc8a-392d-4761-89cc-bc5f3315b9e1"
+      },
+      {
+        "parameters": {
+          "method": "={{ $json.method }}",
+          "url": "={{ $json.url }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "oAuth2Api",
+          "sendHeaders": true,
+          "specifyHeaders": "json",
+          "jsonHeaders": "={{ JSON.stringify($json.headers || {}) }}",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.body || {}) }}",
+          "options": {
+            "response": {
+              "response": {
+                "neverError": true
+              }
+            }
+          }
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          784,
+          1104
+        ],
+        "name": "Call Reddit Ads",
+        "credentials": {
+          "oAuth2Api": {
+            "id": "gs10VGQG8Qcj7ObS",
+            "name": "REDDIT_ADS_OAUTH"
+          }
+        },
+        "onError": "continueRegularOutput",
+        "id": "3f4ec9e5-6d62-41a9-baf8-ac750f19f737"
+      },
+      {
+        "parameters": {
+          "method": "={{ $json.method }}",
+          "url": "={{ $json.url }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "googleOAuth2Api",
+          "sendHeaders": true,
+          "specifyHeaders": "json",
+          "jsonHeaders": "={{ JSON.stringify($json.headers || {}) }}",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.body || {}) }}",
+          "options": {
+            "response": {
+              "response": {
+                "neverError": true
+              }
+            }
+          }
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          784,
+          1264
+        ],
+        "name": "Call Google Ad Manager",
+        "credentials": {
+          "googleOAuth2Api": {
+            "id": "bAMoQZqDbvOVzYEV",
+            "name": "GOOGLE_AD_MANAGER_OAUTH"
+          }
+        },
+        "onError": "continueRegularOutput",
+        "id": "4c2208c4-af5e-4e1e-bee3-8ee4b6776a93"
+      },
+      {
+        "parameters": {
+          "method": "={{ $json.method }}",
+          "url": "={{ $json.url }}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "name": "DeveloperToken",
+                "value": "={{ $json.headers.DeveloperToken }}"
+              },
+              {
+                "name": "CustomerId",
+                "value": "={{ $json.headers.CustomerId }}"
+              },
+              {
+                "name": "AccountId",
+                "value": "={{ $json.headers.AccountId }}"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.body) }}",
+          "options": {
+            "response": {
+              "response": {
+                "fullResponse": true
+              }
+            },
+            "timeout": 30000
+          }
+        },
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          784,
+          1424
+        ],
+        "id": "ms-ads-http-node",
+        "name": "Call Microsoft Ads",
+        "credentials": {
+          "microsoftOAuth2Api": {
+            "id": "z23FXnEJjnjbuInH",
+            "name": "N8N_ASCEND_GTM_INTEGRATION"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ $json }}",
+          "options": {}
+        },
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.1,
+        "position": [
+          1000,
+          304
+        ],
+        "id": "f02d6318-a3cb-4c91-8a35-787e6addf733",
+        "name": "Respond to Webhook"
+      }
+    ],
+    "connections": {
+      "Execute Workflow Trigger": {
+        "main": [
+          [
+            {
+              "node": "Build API Request",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build API Request": {
+        "main": [
+          [
+            {
+              "node": "Domain Switch",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Webhook Trigger": {
+        "main": [
+          [
+            {
+              "node": "Normalize Input",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Format Response": {
+        "main": [
+          [
+            {
+              "node": "Respond to Webhook",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Normalize Input": {
+        "main": [
+          [
+            {
+              "node": "Auth Gate",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Auth Gate": {
+        "main": [
+          [
+            {
+              "node": "Respond Error",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Build API Request",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Domain Switch": {
+        "main": [
+          [
+            {
+              "node": "Call Google Ads",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Meta Ads",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call LinkedIn Ads",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Amazon Ads",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Pinterest Ads",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call X Ads",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Reddit Ads",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Google Ad Manager",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Call Microsoft Ads",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Google Ads": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Meta Ads": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call LinkedIn Ads": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Amazon Ads": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Pinterest Ads": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call X Ads": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Reddit Ads": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Google Ad Manager": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call Microsoft Ads": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    }
+  }
+}
