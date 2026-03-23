@@ -1,0 +1,93 @@
+{
+  "snapshot_at": "2026-03-23T02:15:41.301Z",
+  "reason": "Pre-modification snapshot: No reason provided",
+  "session_id": "unknown-session",
+  "workflow": {
+    "name": "🎯 GTM Domain Agent",
+    "id": "jbSdXj5lpHRjl5HM",
+    "active": true,
+    "nodes": [
+      {
+        "id": "6aca0034-851a-4c57-9b4e-386c291fff66",
+        "name": "Webhook",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2.1,
+        "position": [
+          0,
+          0
+        ],
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "gtm-domain-agent",
+          "authentication": "headerAuth",
+          "responseMode": "responseNode",
+          "options": {}
+        },
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "yyHKK186zwYZXlFW",
+            "name": "Header Auth account"
+          }
+        }
+      },
+      {
+        "id": "35212c47-7eb0-46b8-afb2-ca06ecd340c0",
+        "name": "Agent Core",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          208,
+          0
+        ],
+        "parameters": {
+          "jsCode": "// GTM Domain Agent v2 — Platform-Aware Agentic Router\n// Upgraded: 2026-03-23 — Full domain catalog, tenant_metadata awareness, NL→action mapping\nconst input = $input.first().json;\nconst body = input.body || input;\nconst goal = body.goal;\nconst tenant_id = body.tenant_id || $vars.DEFAULT_TENANT_ID || 'kahuna';\nconst context = body.context || {};\n\nif (!goal) {\n  return [{ json: { error: 'Missing required field: goal', tenant_id } }];\n}\n\nconst N8N_BASE = 'https://mmurawala.app.n8n.cloud';\nconst N8N_API_KEY = $vars.N8N_API_KEY;\nconst ANTHROPIC_API_KEY = $vars.ANTHROPIC_API_KEY_N8N;\nconst GW_MASTER_KEY = $vars.key_master;\nconst ACTION_MAP_TABLE = 'nTBOiE9byj3KcHVQ';\nconst GW_PATH = '/webhook/orchestrate-v2';\nconst MODEL = 'claude-sonnet-4-6';\nconst MAX_TURNS = 15;\n\n// — Fetch action map for tool validation —\nconst actionMapResp = await this.helpers.httpRequest({\n  method: 'GET',\n  url: `${N8N_BASE}/api/v1/data-tables/${ACTION_MAP_TABLE}/rows?limit=250`,\n  headers: { 'X-N8N-API-KEY': N8N_API_KEY },\n  json: true\n});\nconst actionMap = (actionMapResp.data || actionMapResp.rows || []);\nconst validActions = new Set(actionMap.map(r => `${r.api_name}.${r.action}`));\n\n// — System Prompt —\nconst systemPrompt = `You are the Ascend GTM Domain Agent — an AI assistant that executes marketing, sales, analytics, and productivity tasks through the Ascend Gateway platform.\n\nYou serve tenant: \"${tenant_id}\"\n\n## HOW THE PLATFORM WORKS\n- You call the ascend_gateway tool with {api_name, action, params}\n- The gateway automatically resolves tenant config and injects account IDs (customer_id, property_id, ad_account_id, etc.) from tenant_metadata\n- You do NOT need to know or pass internal account IDs — the platform handles this\n- For most queries, you just need the api_name, action, and any query-specific params (date ranges, filters, object types)\n\n## CRITICAL RULES\n1. NEVER ask the user for account IDs, customer IDs, or property IDs — tenant config provides them automatically\n2. ALWAYS use the think tool first to plan multi-step queries\n3. When a query spans multiple domains (e.g. \"compare ad spend to website traffic\"), make parallel gateway calls\n4. Summarize data in a human-readable format — tables, bullet points, key metrics — never dump raw JSON\n5. If a gateway call returns an error, explain what went wrong and suggest alternatives\n6. Default date range is LAST_7_DAYS unless the user specifies otherwise\n\n## AVAILABLE DOMAINS & KEY ACTIONS\n\n### Advertising\n- **google_ads**: campaigns, ad_groups, keywords, custom_query (GAQL), mutate\n- **meta_ads**: campaigns, ad_sets, insights\n- **linkedin_ads**: campaigns, analytics, creatives\n- **microsoft_ads**: campaigns, ad_groups, ads, keywords, report, accounts\n\n### Analytics\n- **ga4**: report (sessions, users, pageviews), realtime, performance (source/medium), list_streams\n- **google_search_console**: query (search analytics), performance, sitemaps\n- **google_tag_manager**: list_accounts, list_containers, list_tags, list_triggers\n\n### CRM\n- **hubspot**: contacts, companies, deals, search, get, create, update, pipelines, owners, tasks, meetings, tickets, properties, workflows, campaigns\n- **salesforce**: query (SOQL), get, create, update, describe, search (SOSL), limits, metadata, delete, upsert, composite\n- **apollo**: search, enrich, organization_search, organization_enrich\n- **gong**: calls, call_transcript, users, stats\n\n### Marketing / Content\n- **wordpress**: posts, get_post, create_post, update_post, delete_post, pages, categories, media\n- **semrush**: domain_overview, keyword_overview, backlinks, organic_results\n\n### Productivity\n- **google_sheets**: read, write, append, list, clear, create, batch_update\n- **google_calendar**: list, create, get, update, delete, free_busy, calendars\n- **google_drive**: list, get, search, create, copy, move, delete, download, permissions, export\n- **google_docs**: get, create, append\n- **google_slides**: get, create, batch_update\n- **gmail**: send, list, read, draft, search, labels, reply, trash, threads\n- **outlook**: send, list, read, search, calendar_events\n- **slack**: send, list_channels, search, read_channel, read_thread, list_users, reactions_add\n- **notion**: search, get_page, create_page, update_page, query_database, get_database, get_markdown, update_markdown\n\n### AI\n- **anthropic**: messages, batch_create/get/list/cancel/results, count_tokens, models\n- **openai**: chat, embeddings, images, audio_transcribe, audio_speech, responses\n- **gemini**: generate, image, search, code, research, embed, tts, imagen, veo\n- **groq**: chat, audio_transcribe\n- **perplexity**: chat\n- **deepseek**: chat, fim\n\n### Creative\n- **leonardo**: generate, status, models, upscale, image_to_image\n- **gamma**: generate (presentations), status, list_themes\n\n### Platform Ops\n- **github**: get_file, create_or_update_file, list_contents, list_repos\n- **handover**: (internal platform operations)\n\n## COMMON QUERY PATTERNS\n\n| User says | Action |\n|-----------|--------|\n| \"Show me my Google Ads performance\" | google_ads.campaigns |\n| \"How is my website traffic?\" | ga4.report {metrics: sessions, users, pageviews} |\n| \"What keywords are we ranking for?\" | google_search_console.query |\n| \"Show me my Meta ad campaigns\" | meta_ads.campaigns |\n| \"List my HubSpot contacts\" | hubspot.contacts |\n| \"Show Salesforce accounts\" | salesforce.query {soql: 'SELECT Id, Name FROM Account LIMIT 10'} |\n| \"How are LinkedIn ads doing?\" | linkedin_ads.analytics |\n| \"Show me SEMrush data\" | semrush.domain_overview |\n| \"What blog posts do we have?\" | wordpress.posts |\n| \"Show my Gong calls\" | gong.calls |\n| \"Send a Slack message\" | slack.send |\n| \"What is on my calendar?\" | google_calendar.list |\n\n## PARAM HINTS\n- **ga4.report**: {metrics: [{name:'sessions'},{name:'totalUsers'}], dimensions: [{name:'date'}], dateRanges: [{startDate:'7daysAgo', endDate:'today'}]}\n- **google_ads.campaigns**: {date_range: 'LAST_7_DAYS'} — GAQL auto-generated by handler\n- **google_ads.custom_query**: {gaql: 'SELECT campaign.name, metrics.clicks FROM campaign WHERE ...'}\n- **meta_ads.campaigns**: {fields: 'name,status,objective', limit: 25}\n- **meta_ads.insights**: {fields: 'impressions,clicks,spend,ctr', date_preset: 'last_7d', level: 'campaign'}\n- **hubspot.search**: {objectType: 'contacts', filters: [{propertyName:'email', operator:'CONTAINS_TOKEN', value:'@example.com'}]}\n- **salesforce.query**: {soql: 'SELECT Id, Name FROM Account LIMIT 10'}\n- **google_search_console.query**: {startDate: '2026-03-01', endDate: '2026-03-22', dimensions: ['query'], rowLimit: 25}\n- **slack.send**: {channel: '#channel-name', text: 'Hello!'}\n- **wordpress.posts**: {per_page: 10, status: 'publish'}\n\nAlways be concise, action-oriented, and format responses for readability.`;\n\n// — Tools —\nconst tools = [\n  {\n    name: 'think',\n    description: 'Plan your approach before executing. Use this to reason about which domains and actions to call, what params to use, and how to combine results. ALWAYS use this first for complex or multi-domain queries.',\n    input_schema: { type: 'object', properties: { thought: { type: 'string', description: 'Your reasoning and plan' } }, required: ['thought'] }\n  },\n  {\n    name: 'ascend_gateway',\n    description: 'Execute a GTM action through the Ascend Gateway. The gateway auto-injects tenant account IDs — you only need api_name, action, and query-specific params.',\n    input_schema: {\n      type: 'object',\n      properties: {\n        api_name: { type: 'string', description: 'The API domain (e.g. google_ads, ga4, hubspot, meta_ads)' },\n        action: { type: 'string', description: 'The action to execute (e.g. campaigns, report, contacts)' },\n        params: { type: 'object', description: 'Action-specific parameters. Account IDs are auto-injected.' }\n      },\n      required: ['api_name', 'action']\n    }\n  },\n  {\n    name: 'list_domain_actions',\n    description: 'List all available actions for a specific API domain, or all domains if no filter. Use only if you need to discover actions not in your built-in catalog.',\n    input_schema: { type: 'object', properties: { api_name: { type: 'string', description: 'Filter to a specific API domain (optional)' } } }\n  }\n];\n\n// — Tool Execution —\nasync function executeTool(name, toolInput) {\n  if (name === 'think') return JSON.stringify({ noted: true });\n\n  if (name === 'list_domain_actions') {\n    const filtered = toolInput.api_name ? actionMap.filter(r => r.api_name === toolInput.api_name) : actionMap;\n    return JSON.stringify(filtered.map(r => ({ api_name: r.api_name, action: r.action, description: r.description || '', body_mode: r.body_mode || '' })));\n  }\n\n  if (name === 'ascend_gateway') {\n    const apiName = toolInput.api_name;\n    const action = toolInput.action;\n    const key = `${apiName}.${action}`;\n    if (!validActions.has(key)) {\n      const apiExists = actionMap.some(r => r.api_name === apiName);\n      if (!apiExists) return JSON.stringify({ error: `Unknown API domain: ${apiName}`, hint: 'Use list_domain_actions to discover available domains' });\n      const available = actionMap.filter(r => r.api_name === apiName).map(r => r.action);\n      return JSON.stringify({ error: `Unknown action: ${action} for ${apiName}`, available_actions: [...new Set(available)] });\n    }\n    try {\n      const gwResp = await this.helpers.httpRequest({\n        method: 'POST', url: `${N8N_BASE}${GW_PATH}`,\n        headers: { 'Content-Type': 'application/json', 'x-api-key': GW_MASTER_KEY },\n        body: { api_name: apiName, action, tenant_id, params: toolInput.params || {} },\n        json: true, timeout: 30000\n      });\n      const respStr = JSON.stringify(gwResp);\n      if (respStr.length > 15000) {\n        const data = gwResp.data || gwResp.result || gwResp;\n        const items = Array.isArray(data) ? data : (data.rows || data.results || data.items || [data]);\n        const truncated = items.slice(0, 20);\n        return JSON.stringify({ _truncated: true, _total_items: items.length, _showing: truncated.length, data: truncated });\n      }\n      return respStr;\n    } catch (e) {\n      const errMsg = e.message || String(e);\n      return JSON.stringify({\n        error: errMsg, api_name: apiName, action,\n        hint: errMsg.includes('401') ? 'Auth error — credential may need re-authorization'\n            : errMsg.includes('404') ? 'Endpoint not found — check action name'\n            : errMsg.includes('429') ? 'Rate limited — try again in a moment'\n            : 'Check params and try again'\n      });\n    }\n  }\n  return JSON.stringify({ error: `Unknown tool: ${name}` });\n}\n\n// — Agentic Loop —\nlet messages = [{ role: 'user', content: goal }];\nif (context.history && Array.isArray(context.history)) {\n  messages = [...context.history, { role: 'user', content: goal }];\n}\n\nlet finalResponse = '';\nlet totalTokens = { input: 0, output: 0 };\n\nfor (let turn = 0; turn < MAX_TURNS; turn++) {\n  const result = await this.helpers.httpRequest({\n    method: 'POST', url: 'https://api.anthropic.com/v1/messages',\n    headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },\n    body: { model: MODEL, max_tokens: 4096, system: systemPrompt, tools, messages },\n    json: true\n  });\n  if (result.error) throw new Error(`Anthropic error: ${JSON.stringify(result.error)}`);\n  if (result.usage) { totalTokens.input += result.usage.input_tokens || 0; totalTokens.output += result.usage.output_tokens || 0; }\n  messages.push({ role: 'assistant', content: result.content });\n  if (result.stop_reason === 'end_turn') { finalResponse = result.content.filter(b => b.type === 'text').map(b => b.text).join('\\n'); break; }\n  const toolUseBlocks = result.content.filter(b => b.type === 'tool_use');\n  if (toolUseBlocks.length === 0) { finalResponse = result.content.filter(b => b.type === 'text').map(b => b.text).join('\\n'); break; }\n  const toolResults = [];\n  for (const tu of toolUseBlocks) { const tr = await executeTool.call(this, tu.name, tu.input); toolResults.push({ type: 'tool_result', tool_use_id: tu.id, content: tr }); }\n  messages.push({ role: 'user', content: toolResults });\n}\n\nreturn [{ json: { response: finalResponse, tenant_id, goal, turns: Math.floor(messages.length / 2), tokens: totalTokens } }];"
+        }
+      },
+      {
+        "id": "c2cc1f79-7ab2-4b21-aed1-e6d17121d27a",
+        "name": "Respond to Webhook",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.5,
+        "position": [
+          416,
+          0
+        ],
+        "parameters": {
+          "options": {}
+        }
+      }
+    ],
+    "connections": {
+      "Webhook": {
+        "main": [
+          [
+            {
+              "node": "Agent Core",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Agent Core": {
+        "main": [
+          [
+            {
+              "node": "Respond to Webhook",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "binaryMode": "separate",
+      "availableInMCP": false,
+      "timeSavedMode": "fixed",
+      "errorWorkflow": "4l0H7MgNyOHbYPbO",
+      "callerPolicy": "workflowsFromSameOwner"
+    }
+  }
+}
