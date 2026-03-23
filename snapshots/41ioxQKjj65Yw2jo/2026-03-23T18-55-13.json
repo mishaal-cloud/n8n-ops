@@ -1,0 +1,403 @@
+{
+  "snapshot_at": "2026-03-23T18:55:13.368Z",
+  "reason": "Pre-code_patch: code_patch applied",
+  "session_id": "unknown",
+  "workflow": {
+    "name": "📱 Telegram — Mobile Command Interface",
+    "id": "41ioxQKjj65Yw2jo",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {
+          "updates": [
+            "message"
+          ],
+          "additionalFields": {}
+        },
+        "id": "tg1",
+        "name": "Telegram Trigger",
+        "type": "n8n-nodes-base.telegramTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          256,
+          304
+        ],
+        "webhookId": "telegram-mobile-cmd",
+        "credentials": {
+          "telegramApi": {
+            "id": "NgKuVeiyi5ZcBKTY",
+            "name": "Telegram account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "const msg=$input.first().json;const text=msg.message?.text||'';const chatId=msg.message?.chat?.id;const userId=msg.message?.from?.id;const username=msg.message?.from?.username||'';const firstName=msg.message?.from?.first_name||'';const allowedStr=$vars.TELEGRAM_ALLOWED_USERS||'';const allowed=allowedStr.split(',').map(s=>s.trim()).filter(Boolean);const authorized=allowed.length>0&&allowed.includes(String(userId));return[{json:{authorized,chat_id:chatId,user_id:userId,username,first_name:firstName,text}}];"
+        },
+        "id": "tg2",
+        "name": "Auth Gate",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          512,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "leftValue": "={{ $json.authorized }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "true"
+                }
+              }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        },
+        "id": "tg3",
+        "name": "Is Authorized?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.2,
+        "position": [
+          752,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_BOT_TOKEN }}/sendMessage",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\"chat_id\":{{ $json.chat_id }},\"text\":\"Unauthorized. Contact your admin to get access.\"}",
+          "options": {
+            "timeout": 10000
+          }
+        },
+        "id": "tg4",
+        "name": "Send Unauthorized",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1008,
+          512
+        ],
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "jsCode": "const input=$input.first().json;const text=input.text||'';const chatId=input.chat_id;const dt=$vars.DEFAULT_TENANT_ID||'kahuna';const cm=text.match(/^\\/([\\w]+)(?:\\s+(.*))?$/);if(cm){const cmd='/'+cm[1].toLowerCase();const arg=(cm[2]||'').trim();if(cmd==='/help')return[{json:{type:'command',chat_id:chatId,response:'Ascend GTM Bot\\n\\nCommands:\\n/help - Show this message\\n/status - Platform health check\\n/pulse - Quick platform pulse check\\n/spend - Ad spend summary\\n/leads - Lead generation report\\n/domains - List available domains\\n/actions [domain] - List domain actions\\n/tenant - Tenant routing info\\n\\nUsage: Type your goal naturally.\\nPrefix with tenant name to target:\\nkahuna check HubSpot contacts'}}];if(cmd==='/status')return[{json:{type:'goal',chat_id:chatId,goal:'Get platform health status and report any issues',tenant_id:dt}}];if(cmd==='/pulse')return[{json:{type:'goal',chat_id:chatId,goal:'Quick platform pulse check - summarize system health, active workflows, and any alerts',tenant_id:dt}}];if(cmd==='/spend')return[{json:{type:'goal',chat_id:chatId,goal:'Get ad spend summary across all platforms including Google Ads, LinkedIn Ads, and Meta Ads with totals and trends',tenant_id:dt}}];if(cmd==='/leads')return[{json:{type:'goal',chat_id:chatId,goal:'Generate lead generation report with counts, sources, conversion rates, and pipeline status',tenant_id:dt}}];if(cmd==='/domains')return[{json:{type:'goal',chat_id:chatId,goal:'List all available domains and their action counts',tenant_id:dt}}];if(cmd==='/actions'&&arg)return[{json:{type:'goal',chat_id:chatId,goal:'List all available actions for the '+arg+' domain',tenant_id:dt}}];if(cmd==='/tenant')return[{json:{type:'command',chat_id:chatId,response:'Tenant Routing\\nDefault: '+dt+'\\n\\nPrefix your message with tenant name:\\nkahuna get CRM contacts\\ncodiac check pipeline\\nascend list workflows'}}];return[{json:{type:'command',chat_id:chatId,response:'Unknown command: '+cmd+'\\nType /help for available commands.'}}];}let tid=dt;if(/\\bcodiac\\b/i.test(text))tid='codiac';if(/\\bascend\\b/i.test(text))tid='ascend';if(/\\bkahuna\\b/i.test(text))tid='kahuna';const goal=text.replace(/\\b(kahuna|codiac|ascend)\\b/gi,'').trim();if(!goal)return[{json:{type:'command',chat_id:chatId,response:'Please provide a goal or type /help for commands.'}}];return[{json:{type:'goal',chat_id:chatId,goal,tenant_id:tid}}];"
+        },
+        "id": "tg5",
+        "name": "Intent Parser",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1008,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "leftValue": "={{ $json.type }}",
+                "rightValue": "command",
+                "operator": {
+                  "type": "string",
+                  "operation": "equals"
+                }
+              }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        },
+        "id": "tg6",
+        "name": "Is Command?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.2,
+        "position": [
+          1264,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_BOT_TOKEN }}/sendMessage",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\"chat_id\":{{ $json.chat_id }},\"text\":{{ JSON.stringify($json.response) }}}",
+          "options": {
+            "timeout": 10000
+          }
+        },
+        "id": "tg7",
+        "name": "Send Command Response",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1504,
+          208
+        ],
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_BOT_TOKEN }}/sendChatAction",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\"chat_id\":{{ $json.chat_id }},\"action\":\"typing\"}",
+          "options": {
+            "timeout": 5000
+          }
+        },
+        "id": "tg8",
+        "name": "Typing Indicator",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1504,
+          400
+        ],
+        "continueOnFail": true
+      },
+      {
+        "id": "tg9",
+        "name": "Call GTM Agent",
+        "type": "n8n-nodes-base.executeWorkflow",
+        "typeVersion": 1.2,
+        "position": [
+          1760,
+          400
+        ],
+        "parameters": {
+          "source": "database",
+          "workflowId": {
+            "__rl": true,
+            "value": "jbSdXj5lpHRjl5HM",
+            "mode": "list"
+          },
+          "options": {}
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "// Format agent response + save conversation to session_state DataTable\nconst input = $input.first().json;\nconst ip = $(\"Intent Parser\").first().json;\nconst prep = $(\"Prepare Agent Input\").first().json;\nconst chatId = ip.chat_id;\nconst sessionKey = prep._session?.key || `tg_${chatId}`;\nconst sessionRowId = prep._session?.rowId;\nconst N8N_BASE = 'https://mmurawala.app.n8n.cloud';\nconst N8N_API_KEY = $vars.N8N_API_KEY;\nconst SESSION_TABLE = '2z5zRvsJZsGBtsmw';\nconst MAX_HISTORY = 20;\n\nif (input.error || (typeof input.message === 'string' && input.message.includes('error'))) {\n  return [{ json: { chat_id: chatId, text: 'Agent error. Try again.\\n' + (input.error || input.message || 'Unknown').toString().substring(0, 200) } }];\n}\nlet text = input.response || input.data?.response || 'No response from agent.';\nif (text.length > 4000) text = text.substring(0, 3997) + '...';\n\nlet history = [];\ntry { history = prep.context?.history || []; } catch(e) { history = []; }\nhistory.push({ role: 'user', content: ip.goal });\nhistory.push({ role: 'assistant', content: text });\nif (history.length > MAX_HISTORY) history = history.slice(-MAX_HISTORY);\n\nconst now = new Date().toISOString();\ntry {\n  if (sessionRowId) {\n    await this.helpers.httpRequest({\n      method: 'PATCH',\n      url: `${N8N_BASE}/api/v1/data-tables/${SESSION_TABLE}/rows/${sessionRowId}`,\n      headers: { 'X-N8N-API-KEY': N8N_API_KEY, 'Content-Type': 'application/json' },\n      body: { state: JSON.stringify(history), updated_at: now },\n      json: true\n    });\n  } else {\n    await this.helpers.httpRequest({\n      method: 'POST',\n      url: `${N8N_BASE}/api/v1/data-tables/${SESSION_TABLE}/rows`,\n      headers: { 'X-N8N-API-KEY': N8N_API_KEY, 'Content-Type': 'application/json' },\n      body: { session_id: sessionKey, model: 'telegram', state: JSON.stringify(history), updated_at: now },\n      json: true\n    });\n  }\n} catch(e) { /* session save failed, non-critical */ }\n\nreturn [{ json: { chat_id: chatId, text } }];"
+        },
+        "id": "tg10",
+        "name": "Format Response",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2000,
+          400
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "=https://api.telegram.org/bot{{ $vars.TELEGRAM_BOT_TOKEN }}/sendMessage",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\"chat_id\":{{ $json.chat_id }},\"text\":{{ JSON.stringify($json.text) }}}",
+          "options": {
+            "timeout": 15000
+          }
+        },
+        "id": "tg11",
+        "name": "Send Agent Reply",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          2256,
+          400
+        ],
+        "continueOnFail": true
+      },
+      {
+        "id": "tg8b",
+        "name": "Prepare Agent Input",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1640,
+          400
+        ],
+        "parameters": {
+          "jsCode": "// Load conversation history from session_state DataTable, then prepare agent input\nconst ip = $(\"Intent Parser\").first().json;\nconst chatId = ip.chat_id;\nconst sessionKey = `tg_${chatId}`;\nconst N8N_BASE = 'https://mmurawala.app.n8n.cloud';\nconst N8N_API_KEY = $vars.N8N_API_KEY;\nconst SESSION_TABLE = '2z5zRvsJZsGBtsmw';\nconst SESSION_TTL_MS = 30 * 60 * 1000;\nconst MAX_HISTORY = 20;\n\nlet history = [];\nlet sessionRowId = null;\ntry {\n  const resp = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `${N8N_BASE}/api/v1/data-tables/${SESSION_TABLE}/rows?limit=250`,\n    headers: { 'X-N8N-API-KEY': N8N_API_KEY },\n    json: true\n  });\n  const rows = resp.data || resp.rows || [];\n  const row = rows.find(r => r.session_id === sessionKey);\n  if (row) {\n    sessionRowId = row.id;\n    const updatedAt = new Date(row.updated_at || 0).getTime();\n    const now = Date.now();\n    if (now - updatedAt < SESSION_TTL_MS) {\n      try { history = JSON.parse(row.state || '[]'); } catch(e) { history = []; }\n      if (history.length > MAX_HISTORY) history = history.slice(-MAX_HISTORY);\n    } else {\n      history = [];\n    }\n  }\n} catch(e) { /* session load failed, proceed without history */ }\n\nreturn [{ json: {\n  goal: ip.goal,\n  tenant_id: ip.tenant_id,\n  context: { history },\n  _session: { key: sessionKey, rowId: sessionRowId, chat_id: chatId }\n} }];"
+        }
+      }
+    ],
+    "connections": {
+      "Telegram Trigger": {
+        "main": [
+          [
+            {
+              "node": "Auth Gate",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Auth Gate": {
+        "main": [
+          [
+            {
+              "node": "Is Authorized?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Is Authorized?": {
+        "main": [
+          [
+            {
+              "node": "Intent Parser",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Send Unauthorized",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Intent Parser": {
+        "main": [
+          [
+            {
+              "node": "Is Command?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Is Command?": {
+        "main": [
+          [
+            {
+              "node": "Send Command Response",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Typing Indicator",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Typing Indicator": {
+        "main": [
+          [
+            {
+              "node": "Prepare Agent Input",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Call GTM Agent": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Format Response": {
+        "main": [
+          [
+            {
+              "node": "Send Agent Reply",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Prepare Agent Input": {
+        "main": [
+          [
+            {
+              "node": "Call GTM Agent",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    }
+  }
+}
