@@ -1,0 +1,107 @@
+{
+  "snapshot_at": "2026-03-23T18:05:24.556Z",
+  "reason": "Pre-code_patch: code_patch applied",
+  "session_id": "unknown",
+  "workflow": {
+    "name": "🎯 GTM Domain Agent",
+    "id": "jbSdXj5lpHRjl5HM",
+    "active": true,
+    "nodes": [
+      {
+        "id": "6aca0034-851a-4c57-9b4e-386c291fff66",
+        "name": "Webhook",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2.1,
+        "position": [
+          0,
+          0
+        ],
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "gtm-domain-agent",
+          "authentication": "headerAuth",
+          "responseMode": "responseNode",
+          "options": {}
+        },
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "yyHKK186zwYZXlFW",
+            "name": "Header Auth account"
+          }
+        }
+      },
+      {
+        "id": "35212c47-7eb0-46b8-afb2-ca06ecd340c0",
+        "name": "Agent Core",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          208,
+          0
+        ],
+        "parameters": {
+          "jsCode": "// GTM Domain Agent v2 — Fixed gateway field names\nconst input = $input.first().json;\nconst body = input.body || input;\nconst goal = body.goal;\nconst tenant_id = body.tenant_id || $vars.DEFAULT_TENANT_ID || 'kahuna';\nconst context = body.context || {};\nif (!goal) { return [{ json: { error: 'Missing required field: goal', tenant_id } }]; }\nconst N8N_BASE = 'https://mmurawala.app.n8n.cloud';\nconst N8N_API_KEY = $vars.N8N_API_KEY;\nconst ANTHROPIC_API_KEY = $vars.ANTHROPIC_API_KEY_N8N;\nconst GW_MASTER_KEY = $vars.key_master;\nconst ACTION_MAP_TABLE = 'nTBOiE9byj3KcHVQ';\nconst GW_PATH = '/webhook/orchestrate-v2';\nconst MODEL = 'claude-sonnet-4-6';\nconst MAX_TURNS = 15;\nconst actionMapResp = await this.helpers.httpRequest({ method: 'GET', url: `${N8N_BASE}/api/v1/data-tables/${ACTION_MAP_TABLE}/rows?limit=250`, headers: { 'X-N8N-API-KEY': N8N_API_KEY }, json: true });\nconst actionMap = (actionMapResp.data || actionMapResp.rows || []);\nconst validActions = new Set(actionMap.map(r => `${r.api_name}.${r.action}`));\nconst systemPrompt = `You are the Ascend GTM Domain Agent — an AI assistant that executes marketing, sales, analytics, and productivity tasks through the Ascend Gateway platform.\\nYou serve tenant: \\\"${tenant_id}\\\"\\n\\n## HOW THE PLATFORM WORKS\\n- You call the ascend_gateway tool with {api_name, action, params}\\n- The gateway automatically resolves tenant config and injects account IDs (customer_id, property_id, ad_account_id, etc.) from tenant_metadata\\n- You do NOT need to know or pass internal account IDs\\n- For most queries, you just need the api_name, action, and any query-specific params\\n\\n## CRITICAL RULES\\n1. NEVER ask the user for account IDs, customer IDs, or property IDs\\n2. ALWAYS use the think tool first to plan multi-step queries\\n3. When a query spans multiple domains, make parallel gateway calls\\n4. Summarize data in a human-readable format — never dump raw JSON\\n5. If a gateway call returns an error, explain what went wrong\\n6. Default date range is LAST_7_DAYS unless the user specifies otherwise\\n\\n## AVAILABLE DOMAINS & KEY ACTIONS\\n### Advertising\\n- google_ads: campaigns, ad_groups, keywords, custom_query (GAQL), mutate\\n- meta_ads: campaigns, ad_sets, insights\\n- linkedin_ads: campaigns, analytics, creatives\\n### Analytics\\n- ga4: report, realtime, performance, list_streams\\n- google_search_console: query, performance, sitemaps\\n### CRM\\n- hubspot: contacts, companies, deals, search, get, create, update, pipelines, owners, tasks, tickets, properties\\n- salesforce: query (SOQL), get, create, update, describe, search, limits\\n- apollo: search, enrich, organization_search\\n- gong: calls, call_transcript, users, stats\\n### Marketing / Content\\n- wordpress: posts, get_post, create_post, update_post, pages, categories, media\\n- semrush: domain_overview, keyword_overview, backlinks, organic_results\\n### Productivity\\n- google_sheets: read, write, append, list, clear, create\\n- google_calendar: list, create, get, update, delete, free_busy\\n- google_drive: list, get, search, create, copy, move, delete, download\\n- google_docs: get, create, append\\n- gmail: send, list, read, draft, search, reply, trash, threads\\n- outlook: send, list, read, search, calendar_events\\n- slack: send, list_channels, search, read_channel, read_thread\\n- notion: search, get_page, create_page, update_page, query_database\\n### AI\\n- anthropic: messages | openai: chat, images | gemini: generate, image, search\\n- groq: chat | perplexity: chat | deepseek: chat\\n### Creative\\n- leonardo: generate, status | gamma: generate, status\\n\\n## PARAM HINTS\\n- ga4.report: {metrics:[{name:'sessions'},{name:'totalUsers'}],dimensions:[{name:'date'}],dateRanges:[{startDate:'7daysAgo',endDate:'today'}]}\\n- google_ads.campaigns: {date_range:'LAST_7_DAYS'}\\n- google_ads.custom_query: {gaql:'SELECT campaign.name, metrics.clicks FROM campaign WHERE ...'}\\n- meta_ads.insights: {fields:'impressions,clicks,spend,ctr',date_preset:'last_7d',level:'campaign'}\\n- hubspot.search: {objectType:'contacts',filters:[{propertyName:'email',operator:'CONTAINS_TOKEN',value:'@example.com'}]}\\n- salesforce.query: {soql:'SELECT Id, Name FROM Account LIMIT 10'}\\n- google_search_console.query: {dimensions:['query'],rowLimit:25}\\n- slack.send: {channel:'#channel-name',text:'Hello!'}\\n- wordpress.posts: {per_page:10,status:'publish'}\\n\\nAlways be concise, action-oriented, and format responses for readability.`;\nconst tools = [{ name: 'think', description: 'Plan your approach. ALWAYS use first for complex queries.', input_schema: { type: 'object', properties: { thought: { type: 'string' } }, required: ['thought'] } }, { name: 'ascend_gateway', description: 'Execute a GTM action. Gateway auto-injects tenant account IDs.', input_schema: { type: 'object', properties: { api_name: { type: 'string' }, action: { type: 'string' }, params: { type: 'object' } }, required: ['api_name', 'action'] } }, { name: 'list_domain_actions', description: 'Discover actions not in built-in catalog.', input_schema: { type: 'object', properties: { api_name: { type: 'string' } } } }];\nasync function executeTool(name, toolInput) {\n  if (name === 'think') return JSON.stringify({ noted: true });\n  if (name === 'list_domain_actions') { const filtered = toolInput.api_name ? actionMap.filter(r => r.api_name === toolInput.api_name) : actionMap; return JSON.stringify(filtered.map(r => ({ api_name: r.api_name, action: r.action, description: r.description || '' }))); }\n  if (name === 'ascend_gateway') {\n    const apiName = toolInput.api_name; const action = toolInput.action; const key = `${apiName}.${action}`;\n    if (!validActions.has(key)) { const apiExists = actionMap.some(r => r.api_name === apiName); if (!apiExists) return JSON.stringify({ error: `Unknown API: ${apiName}` }); return JSON.stringify({ error: `Unknown action: ${action} for ${apiName}`, available: [...new Set(actionMap.filter(r => r.api_name === apiName).map(r => r.action))] }); }\n    try { const gwResp = await this.helpers.httpRequest({ method: 'POST', url: `${N8N_BASE}${GW_PATH}`, headers: { 'Content-Type': 'application/json', 'x-api-key': GW_MASTER_KEY }, body: { domain: apiName, action, client: tenant_id, params: toolInput.params || {} }, json: true, timeout: 30000 }); const s = JSON.stringify(gwResp); if (s.length > 15000) { const d = gwResp.data || gwResp.result || gwResp; const items = Array.isArray(d) ? d : (d.rows || d.results || d.items || [d]); return JSON.stringify({ _truncated: true, _total: items.length, data: items.slice(0, 20) }); } return s; } catch (e) { return JSON.stringify({ error: e.message || String(e) }); }\n  }\n  return JSON.stringify({ error: `Unknown tool: ${name}` });\n}\nlet messages = [{ role: 'user', content: goal }];\nif (context.history && Array.isArray(context.history)) { messages = [...context.history, { role: 'user', content: goal }]; }\nlet finalResponse = ''; let totalTokens = { input: 0, output: 0 };\nfor (let turn = 0; turn < MAX_TURNS; turn++) {\n  const result = await this.helpers.httpRequest({ method: 'POST', url: 'https://api.anthropic.com/v1/messages', headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' }, body: { model: MODEL, max_tokens: 4096, system: systemPrompt, tools, messages }, json: true });\n  if (result.error) throw new Error(`Anthropic error: ${JSON.stringify(result.error)}`);\n  if (result.usage) { totalTokens.input += result.usage.input_tokens || 0; totalTokens.output += result.usage.output_tokens || 0; }\n  messages.push({ role: 'assistant', content: result.content });\n  if (result.stop_reason === 'end_turn') { finalResponse = result.content.filter(b => b.type === 'text').map(b => b.text).join('\\n'); break; }\n  const toolUseBlocks = result.content.filter(b => b.type === 'tool_use');\n  if (toolUseBlocks.length === 0) { finalResponse = result.content.filter(b => b.type === 'text').map(b => b.text).join('\\n'); break; }\n  const toolResults = [];\n  for (const tu of toolUseBlocks) { const tr = await executeTool.call(this, tu.name, tu.input); toolResults.push({ type: 'tool_result', tool_use_id: tu.id, content: tr }); }\n  messages.push({ role: 'user', content: toolResults });\n}\nreturn [{ json: { response: finalResponse, tenant_id, goal, turns: Math.floor(messages.length / 2), tokens: totalTokens } }];"
+        }
+      },
+      {
+        "id": "c2cc1f79-7ab2-4b21-aed1-e6d17121d27a",
+        "name": "Respond to Webhook",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.5,
+        "position": [
+          416,
+          0
+        ],
+        "parameters": {
+          "options": {}
+        }
+      },
+      {
+        "id": "sub-trigger-01",
+        "name": "Sub-Workflow Trigger",
+        "type": "n8n-nodes-base.executeWorkflowTrigger",
+        "typeVersion": 1,
+        "position": [
+          0,
+          200
+        ],
+        "parameters": {}
+      }
+    ],
+    "connections": {
+      "Webhook": {
+        "main": [
+          [
+            {
+              "node": "Agent Core",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Agent Core": {
+        "main": [
+          [
+            {
+              "node": "Respond to Webhook",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Sub-Workflow Trigger": {
+        "main": [
+          [
+            {
+              "node": "Agent Core",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    }
+  }
+}
