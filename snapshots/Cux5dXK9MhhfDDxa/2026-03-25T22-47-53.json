@@ -1,0 +1,154 @@
+{
+  "snapshot_at": "2026-03-25T22:47:53.128Z",
+  "reason": "Pre-modification snapshot: Production deploy: disable availableInMCP",
+  "session_id": "unknown-session",
+  "workflow": {
+    "name": "PLATFORM_CATALOG_SYNC",
+    "id": "Cux5dXK9MhhfDDxa",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "cronExpression",
+                "expression": "0 2 * * *"
+              }
+            ]
+          }
+        },
+        "name": "Daily 2AM UTC",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          0,
+          0
+        ],
+        "id": "f184cdfa-a95e-4d15-9439-9bb4c84d458f"
+      },
+      {
+        "parameters": {},
+        "name": "Manual Test",
+        "type": "n8n-nodes-base.manualTrigger",
+        "typeVersion": 1,
+        "position": [
+          0,
+          220
+        ],
+        "id": "9e9e750f-b98e-4de1-be5f-ce1572767dc7"
+      },
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "catalog-sync",
+          "responseMode": "lastNode",
+          "options": {}
+        },
+        "name": "Webhook Trigger",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2,
+        "position": [
+          0,
+          -220
+        ],
+        "webhookId": "catalog-sync-wh",
+        "id": "d5516807-7987-40a3-8ef1-372004feb937"
+      },
+      {
+        "parameters": {
+          "assignments": {
+            "assignments": [
+              {
+                "id": "c1",
+                "name": "apiKey",
+                "value": "={{ $vars.N8N_API_KEY }}",
+                "type": "string"
+              },
+              {
+                "id": "c2",
+                "name": "masterKey",
+                "value": "={{ $vars.key_master }}",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "name": "Load Config",
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3.4,
+        "position": [
+          280,
+          0
+        ],
+        "id": "0f1e76ff-893f-4b4e-8684-df3299f2dffc"
+      },
+      {
+        "parameters": {
+          "jsCode": "// v8 — Production: cursor pagination + DataTable storage + Slack alert\ntry {\n  const cfg = $input.first().json;\n  if (!cfg.apiKey) return [{ json: { error: 'N8N_API_KEY is empty' } }];\n  const BASE = 'https://mmurawala.app.n8n.cloud/api/v1';\n  const GW = 'https://mmurawala.app.n8n.cloud/webhook/orchestrate-v2';\n  const headers = { 'X-N8N-API-KEY': cfg.apiKey };\n  const gwHeaders = { 'Content-Type': 'application/json', 'x-api-key': cfg.masterKey };\n\n  // Cursor-based pagination for DataTables\n  async function fetchAllRows(tableId) {\n    let allRows = [];\n    let cursor = null;\n    let page = 0;\n    while (true) {\n      let url = BASE + '/data-tables/' + tableId + '/rows?limit=250';\n      if (cursor) url += '&cursor=' + encodeURIComponent(cursor);\n      const resp = await this.helpers.httpRequest({ method: 'GET', url, headers });\n      const rows = resp.data || resp || [];\n      if (Array.isArray(rows)) allRows = allRows.concat(rows);\n      page++;\n      if (resp.nextCursor) { cursor = resp.nextCursor; } else { break; }\n      if (page > 10) break;\n    }\n    return { rows: allRows, pages: page };\n  }\n\n  // 1. Fetch enabled domains\n  const regResp = await this.helpers.httpRequest({ method: 'GET', url: BASE + '/data-tables/8uXPK6pD52xG90Y0/rows?limit=250', headers });\n  const regRows = regResp.data || regResp || [];\n  const domains = (Array.isArray(regRows) ? regRows : []).filter(r => String(r.enabled) === 'true');\n\n  // 2. Fetch ALL actions via cursor pagination\n  const actionResult = await fetchAllRows.call(this, 'nTBOiE9byj3KcHVQ');\n  const enabledActions = actionResult.rows.filter(a => String(a.enabled) === 'true');\n\n  // 3. Build catalog\n  const categoryMap = {};\n  for (const d of domains) {\n    const cat = (d.category || 'OTHER').toUpperCase();\n    if (!categoryMap[cat]) categoryMap[cat] = [];\n    const acts = enabledActions.filter(a => a.api_name === d.api_name).map(a => a.action).sort();\n    if (acts.length > 0) categoryMap[cat].push(d.api_name + '(' + acts.join(',') + ')');\n  }\n  const ORDER = ['AI','CRM','PRODUCTIVITY','MARKETING','ANALYTICS','CMS','CREATIVE','DEPLOYMENT'];\n  let catalog = \"Execute any API action through the gateway. Input: domain (string), action (string), client (string - 'kahuna' or 'ascend'), params (object - action-specific parameters).\\n\\nAVAILABLE DOMAINS AND ACTIONS (call directly — no need for list_domains/list_actions/get_action_schema first):\\n\\n\";\n  for (const cat of ORDER) {\n    if (categoryMap[cat] && categoryMap[cat].length > 0) {\n      catalog += cat + ': ' + categoryMap[cat].join(' | ') + '\\n\\n';\n      delete categoryMap[cat];\n    }\n  }\n  for (const cat of Object.keys(categoryMap).sort()) {\n    if (categoryMap[cat].length > 0) catalog += cat + ': ' + categoryMap[cat].join(' | ') + '\\n\\n';\n  }\n  catalog += \"PARAM HINTS: For 'passthrough' domains (AI, Apollo, Gong, Semrush, Vercel, etc), params go directly as the API body. For 'handler' domains (HubSpot, Google, Slack, etc), check get_action_schema if unsure about required params.\";\n\n  // 4. Compare with current gateway workflow description\n  const wf = await this.helpers.httpRequest({ method: 'GET', url: BASE + '/workflows/42BsiQ2R7nstxydY', headers });\n  let currentDesc = '';\n  for (const node of wf.nodes) {\n    if (node.parameters && node.parameters.name === 'execute_action') {\n      currentDesc = node.parameters.description || '';\n      break;\n    }\n  }\n\n  if (currentDesc === catalog) {\n    return [{ json: { success: true, skipped: true, reason: 'catalog_unchanged', catalog_length: catalog.length, domains: domains.length, actions: enabledActions.length } }];\n  }\n\n  // 5. Catalog changed — store it and alert\n\n  // 5a. Store catalog in platform_changelog for retrieval\n  try {\n    await this.helpers.httpRequest({\n      method: 'POST', url: GW, headers: gwHeaders,\n      body: { domain: 'handover', action: 'insert_rows', client: 'ascend', params: {\n        table_id: 'kqKrSqKSsu8UbU89',\n        rows: [{\n          workflow_name: 'MCP_GATEWAY',\n          change_type: 'catalog_pending',\n          description: 'New catalog generated (' + domains.length + ' domains, ' + enabledActions.length + ' actions, ' + catalog.length + ' chars). Apply to workflow 42BsiQ2R7nstxydY execute_action description.',\n          date: new Date().toISOString(),\n          tenant_id: 'ascend'\n        }]\n      }}\n    });\n  } catch(e) {}\n\n  // 5b. Send Slack alert with the full catalog (truncated for Slack if needed)\n  const slackCatalog = catalog.length > 3000 ? catalog.substring(0, 3000) + '...[truncated]' : catalog;\n  try {\n    await this.helpers.httpRequest({\n      method: 'POST', url: GW, headers: gwHeaders,\n      body: { domain: 'slack', action: 'send', client: 'ascend', params: {\n        channel: 'all-ascendgtm',\n        text: '*🔄 CATALOG SYNC — Action Required*\\n\\nThe API catalog has changed:\\n• *Domains*: ' + domains.length + ' enabled\\n• *Actions*: ' + enabledActions.length + ' enabled\\n• *Catalog*: ' + catalog.length + ' chars (was ' + currentDesc.length + ', delta ' + (catalog.length - currentDesc.length) + ')\\n• *Pages fetched*: ' + actionResult.pages + '\\n\\n_The gateway workflow (42BsiQ2R7nstxydY) cannot be auto-updated via API. Update the `execute_action` tool description manually or via Claude._\\n\\n```' + slackCatalog + '```'\n      }}\n    });\n  } catch(e) {}\n\n  // 5c. Log\n  try {\n    await this.helpers.httpRequest({\n      method: 'POST', url: GW, headers: gwHeaders,\n      body: { domain: 'handover', action: 'log_change', client: 'ascend', params: {\n        workflow_name: 'PLATFORM_CATALOG_SYNC',\n        change_type: 'catalog_refresh_alert',\n        description: 'Catalog changed: ' + domains.length + ' domains, ' + enabledActions.length + ' actions, ' + catalog.length + ' chars. Slack alert sent. Manual apply needed.',\n        date: new Date().toISOString()\n      }}\n    });\n  } catch(e) {}\n\n  return [{ json: {\n    success: true,\n    auto_updated: false,\n    reason: 'gateway_put_blocked',\n    alert_sent: true,\n    domains: domains.length,\n    total_actions_fetched: actionResult.rows.length,\n    enabled_actions: enabledActions.length,\n    action_pages: actionResult.pages,\n    catalog_length: catalog.length,\n    old_length: currentDesc.length,\n    delta: catalog.length - currentDesc.length\n  }}];\n} catch (err) {\n  return [{ json: { success: false, error: err.message, stack: String(err.stack).substring(0, 500) } }];\n}\n"
+        },
+        "name": "Sync Catalog",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          540,
+          0
+        ],
+        "id": "abc4bca4-724c-4528-9a9f-4b8f1cdc34d9"
+      }
+    ],
+    "connections": {
+      "Daily 2AM UTC": {
+        "main": [
+          [
+            {
+              "node": "Load Config",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Manual Test": {
+        "main": [
+          [
+            {
+              "node": "Load Config",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Webhook Trigger": {
+        "main": [
+          [
+            {
+              "node": "Load Config",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Load Config": {
+        "main": [
+          [
+            {
+              "node": "Sync Catalog",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "saveManualExecutions": true,
+      "callerPolicy": "any",
+      "errorWorkflow": "4l0H7MgNyOHbYPbO",
+      "availableInMCP": true
+    }
+  }
+}
