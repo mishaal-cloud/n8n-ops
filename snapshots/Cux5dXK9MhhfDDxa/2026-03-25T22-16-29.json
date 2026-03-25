@@ -1,0 +1,150 @@
+{
+  "snapshot_at": "2026-03-25T22:16:29.834Z",
+  "reason": "Pre-modification snapshot: Activate PLATFORM_CATALOG_SYNC for daily catalog refresh",
+  "session_id": "unknown-session",
+  "workflow": {
+    "name": "PLATFORM_CATALOG_SYNC",
+    "id": "Cux5dXK9MhhfDDxa",
+    "active": false,
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "cronExpression",
+                "expression": "0 2 * * *"
+              }
+            ]
+          }
+        },
+        "name": "Daily 2AM UTC",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          0,
+          0
+        ],
+        "id": "8d7532a5-5752-4357-8246-15d93cbaf0ec"
+      },
+      {
+        "parameters": {},
+        "name": "Manual Test",
+        "type": "n8n-nodes-base.manualTrigger",
+        "typeVersion": 1,
+        "position": [
+          0,
+          220
+        ],
+        "id": "f7953b8b-b8b9-4b50-86c5-27974d4676ee"
+      },
+      {
+        "parameters": {
+          "assignments": {
+            "assignments": [
+              {
+                "id": "cfg1",
+                "name": "n8nBaseUrl",
+                "value": "https://mmurawala.app.n8n.cloud/api/v1",
+                "type": "string"
+              },
+              {
+                "id": "cfg2",
+                "name": "apiKey",
+                "value": "={{ $vars.N8N_API_KEY }}",
+                "type": "string"
+              },
+              {
+                "id": "cfg3",
+                "name": "registryTableId",
+                "value": "8uXPK6pD52xG90Y0",
+                "type": "string"
+              },
+              {
+                "id": "cfg4",
+                "name": "actionTableId",
+                "value": "nTBOiE9byj3KcHVQ",
+                "type": "string"
+              },
+              {
+                "id": "cfg5",
+                "name": "gatewayWorkflowId",
+                "value": "42BsiQ2R7nstxydY",
+                "type": "string"
+              },
+              {
+                "id": "cfg6",
+                "name": "gwMasterKey",
+                "value": "={{ $vars.GW_MASTER_KEY }}",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "name": "Load Config",
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3.4,
+        "position": [
+          280,
+          100
+        ],
+        "id": "e3db2483-c20c-4a33-8486-d53d871ff10d"
+      },
+      {
+        "parameters": {
+          "jsCode": "// PLATFORM_CATALOG_SYNC — regenerate execute_action tool catalog\n// Reads api_registry_v2 + action_map_v2, builds catalog, patches MCP Gateway workflow\n\nconst cfg = $input.first().json;\nconst BASE = cfg.n8nBaseUrl;\nconst headers = { 'X-N8N-API-KEY': cfg.apiKey };\n\n// 1. Fetch enabled domains from api_registry_v2\nconst regResp = await this.helpers.httpRequest({\n  method: 'GET',\n  url: `${BASE}/data-tables/${cfg.registryTableId}/rows?limit=250`,\n  headers\n});\nconst domains = (regResp.data || regResp).filter(r => String(r.enabled) === 'true');\n\n// 2. Fetch ALL actions from action_map_v2 (paginated — max 250 per call)\nlet allActions = [];\nlet offset = 0;\nwhile (true) {\n  const resp = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `${BASE}/data-tables/${cfg.actionTableId}/rows?limit=250&offset=${offset}`,\n    headers\n  });\n  const rows = resp.data || resp;\n  allActions = allActions.concat(rows);\n  if (rows.length < 250) break;\n  offset += 250;\n}\nconst enabledActions = allActions.filter(a => String(a.enabled) === 'true');\n\n// 3. Group by category → domain → actions\nconst categoryMap = {};\nfor (const domain of domains) {\n  const cat = (domain.category || 'OTHER').toUpperCase();\n  if (!categoryMap[cat]) categoryMap[cat] = [];\n  const acts = enabledActions\n    .filter(a => a.api_name === domain.api_name)\n    .map(a => a.action)\n    .sort();\n  if (acts.length > 0) {\n    categoryMap[cat].push(`${domain.api_name}(${acts.join(',')})`);\n  }\n}\n\n// 4. Generate catalog string in fixed category order\nconst ORDER = ['AI','CRM','PRODUCTIVITY','MARKETING','ANALYTICS','CMS','CREATIVE','DEPLOYMENT'];\nlet catalog = \"Execute any API action through the gateway. Input: domain (string), action (string), client (string - 'kahuna' or 'ascend'), params (object - action-specific parameters).\\n\\nAVAILABLE DOMAINS AND ACTIONS (call directly \\u2014 no need for list_domains/list_actions/get_action_schema first):\\n\\n\";\n\nfor (const cat of ORDER) {\n  if (categoryMap[cat] && categoryMap[cat].length > 0) {\n    catalog += `${cat}: ${categoryMap[cat].join(' | ')}\\n\\n`;\n    delete categoryMap[cat];\n  }\n}\n// Append any extra categories not in ORDER\nfor (const cat of Object.keys(categoryMap).sort()) {\n  if (categoryMap[cat].length > 0) {\n    catalog += `${cat}: ${categoryMap[cat].join(' | ')}\\n\\n`;\n  }\n}\ncatalog += \"PARAM HINTS: For 'passthrough' domains (AI, Apollo, Gong, Semrush, Vercel, etc), params go directly as the API body. For 'handler' domains (HubSpot, Google, Slack, etc), check get_action_schema if unsure about required params.\";\n\n// 5. GET current MCP Gateway workflow\nconst wf = await this.helpers.httpRequest({\n  method: 'GET',\n  url: `${BASE}/workflows/${cfg.gatewayWorkflowId}`,\n  headers\n});\n\n// 6. Find execute_action node and update description\nlet found = false;\nlet oldLen = 0;\nfor (const node of wf.nodes) {\n  if (node.parameters && node.parameters.name === 'execute_action') {\n    oldLen = (node.parameters.description || '').length;\n    if (oldLen === catalog.length) {\n      return [{ json: { success: true, skipped: true, reason: 'catalog unchanged', catalog_length: catalog.length, timestamp: new Date().toISOString() } }];\n    }\n    node.parameters.description = catalog;\n    found = true;\n    break;\n  }\n}\nif (!found) throw new Error('execute_action node not found in MCP Gateway workflow');\n\n// 7. PUT updated workflow (only required fields)\nawait this.helpers.httpRequest({\n  method: 'PUT',\n  url: `${BASE}/workflows/${cfg.gatewayWorkflowId}`,\n  headers: { ...headers, 'Content-Type': 'application/json' },\n  body: { name: wf.name, nodes: wf.nodes, connections: wf.connections, settings: wf.settings }\n});\n\n// 8. Log change via gateway\nawait this.helpers.httpRequest({\n  method: 'POST',\n  url: 'https://mmurawala.app.n8n.cloud/webhook/orchestrate-v2',\n  headers: { 'Content-Type': 'application/json', 'x-api-key': cfg.gwMasterKey },\n  body: {\n    domain: 'handover', action: 'log_change', client: 'ascend',\n    params: {\n      workflow_name: 'PLATFORM_CATALOG_SYNC',\n      change_type: 'catalog_refresh',\n      description: `Auto-refreshed execute_action catalog: ${domains.length} domains, ${enabledActions.length} enabled actions, ${catalog.length} chars`,\n      date: new Date().toISOString()\n    }\n  }\n});\n\nreturn [{\n  json: {\n    success: true,\n    domains_count: domains.length,\n    enabled_actions_count: enabledActions.length,\n    catalog_length: catalog.length,\n    old_catalog_length: oldLen,\n    timestamp: new Date().toISOString()\n  }\n}];"
+        },
+        "name": "Generate Catalog & Update Gateway",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          540,
+          100
+        ],
+        "id": "4cd79f01-fd20-4b25-8623-a2eceff53449"
+      }
+    ],
+    "connections": {
+      "Daily 2AM UTC": {
+        "main": [
+          [
+            {
+              "node": "Load Config",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Manual Test": {
+        "main": [
+          [
+            {
+              "node": "Load Config",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Load Config": {
+        "main": [
+          [
+            {
+              "node": "Generate Catalog & Update Gateway",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "saveManualExecutions": true,
+      "callerPolicy": "any",
+      "errorWorkflow": "4l0H7MgNyOHbYPbO",
+      "availableInMCP": false
+    }
+  }
+}
