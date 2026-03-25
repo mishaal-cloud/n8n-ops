@@ -1,0 +1,154 @@
+{
+  "snapshot_at": "2026-03-25T22:33:03.224Z",
+  "reason": "Pre-modification snapshot: v5 redeploy for testing",
+  "session_id": "unknown-session",
+  "workflow": {
+    "name": "PLATFORM_CATALOG_SYNC",
+    "id": "Cux5dXK9MhhfDDxa",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "cronExpression",
+                "expression": "0 2 * * *"
+              }
+            ]
+          }
+        },
+        "name": "Daily 2AM UTC",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          0,
+          0
+        ],
+        "id": "0da55522-ec75-4481-a52d-21fcacd638e3"
+      },
+      {
+        "parameters": {},
+        "name": "Manual Test",
+        "type": "n8n-nodes-base.manualTrigger",
+        "typeVersion": 1,
+        "position": [
+          0,
+          220
+        ],
+        "id": "a9b8519f-3c53-4c1e-a464-99fb00c24d25"
+      },
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "catalog-sync",
+          "responseMode": "lastNode",
+          "options": {}
+        },
+        "name": "Webhook Trigger",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2,
+        "position": [
+          0,
+          -220
+        ],
+        "webhookId": "catalog-sync-wh",
+        "id": "82e4adf0-9733-44b9-af42-248e7ccbbb3a"
+      },
+      {
+        "parameters": {
+          "assignments": {
+            "assignments": [
+              {
+                "id": "c1",
+                "name": "apiKey",
+                "value": "={{ $vars.N8N_API_KEY }}",
+                "type": "string"
+              },
+              {
+                "id": "c2",
+                "name": "masterKey",
+                "value": "={{ $vars.key_master }}",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "name": "Load Config",
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3.4,
+        "position": [
+          280,
+          0
+        ],
+        "id": "85c4645b-dbd6-4154-8f61-8e6f35eaba5a"
+      },
+      {
+        "parameters": {
+          "jsCode": "try {\n  const cfg = $input.first().json;\n  if (!cfg.apiKey) return [{ json: { error: 'N8N_API_KEY is empty' } }];\n  const BASE = 'https://mmurawala.app.n8n.cloud/api/v1';\n  const GW = 'https://mmurawala.app.n8n.cloud/webhook/orchestrate-v2';\n  const headers = { 'X-N8N-API-KEY': cfg.apiKey };\n  const gwHeaders = { 'Content-Type': 'application/json', 'x-api-key': cfg.masterKey };\n\n  // 1. Fetch enabled domains\n  const regResp = await this.helpers.httpRequest({ method: 'GET', url: `${BASE}/data-tables/8uXPK6pD52xG90Y0/rows?limit=250`, headers });\n  const domains = (regResp.data || regResp || []).filter(r => String(r.enabled) === 'true');\n\n  // 2. Fetch ALL actions (paginated)\n  let allActions = [];\n  let offset = 0;\n  while (true) {\n    const resp = await this.helpers.httpRequest({ method: 'GET', url: `${BASE}/data-tables/nTBOiE9byj3KcHVQ/rows?limit=250&offset=${offset}`, headers });\n    const arr = Array.isArray(resp.data || resp) ? (resp.data || resp) : [];\n    allActions = allActions.concat(arr);\n    if (arr.length < 250) break;\n    offset += 250;\n  }\n  const enabledActions = allActions.filter(a => String(a.enabled) === 'true');\n\n  // 3. Build catalog\n  const categoryMap = {};\n  for (const d of domains) {\n    const cat = (d.category || 'OTHER').toUpperCase();\n    if (!categoryMap[cat]) categoryMap[cat] = [];\n    const acts = enabledActions.filter(a => a.api_name === d.api_name).map(a => a.action).sort();\n    if (acts.length > 0) categoryMap[cat].push(d.api_name + '(' + acts.join(',') + ')');\n  }\n  const ORDER = ['AI','CRM','PRODUCTIVITY','MARKETING','ANALYTICS','CMS','CREATIVE','DEPLOYMENT'];\n  let catalog = \"Execute any API action through the gateway. Input: domain (string), action (string), client (string - 'kahuna' or 'ascend'), params (object - action-specific parameters).\\n\\nAVAILABLE DOMAINS AND ACTIONS (call directly \\u2014 no need for list_domains/list_actions/get_action_schema first):\\n\\n\";\n  for (const cat of ORDER) {\n    if (categoryMap[cat] && categoryMap[cat].length > 0) {\n      catalog += cat + ': ' + categoryMap[cat].join(' | ') + '\\n\\n';\n      delete categoryMap[cat];\n    }\n  }\n  for (const cat of Object.keys(categoryMap).sort()) {\n    if (categoryMap[cat].length > 0) catalog += cat + ': ' + categoryMap[cat].join(' | ') + '\\n\\n';\n  }\n  catalog += \"PARAM HINTS: For 'passthrough' domains (AI, Apollo, Gong, Semrush, Vercel, etc), params go directly as the API body. For 'handler' domains (HubSpot, Google, Slack, etc), check get_action_schema if unsure about required params.\";\n\n  // 4. GET current workflow to check if catalog changed\n  const wf = await this.helpers.httpRequest({ method: 'GET', url: `${BASE}/workflows/42BsiQ2R7nstxydY`, headers });\n  let currentDesc = '';\n  for (const node of wf.nodes) {\n    if (node.parameters && node.parameters.name === 'execute_action') {\n      currentDesc = node.parameters.description || '';\n      break;\n    }\n  }\n\n  if (currentDesc === catalog) {\n    return [{ json: { success: true, skipped: true, reason: 'catalog_unchanged', catalog_length: catalog.length, domains: domains.length, actions: enabledActions.length } }];\n  }\n\n  // 5. Try to update — strip nodes to minimum fields to reduce payload size\n  const cleanNodes = wf.nodes.map(n => {\n    const clean = { parameters: n.parameters, name: n.name, type: n.type, typeVersion: n.typeVersion, position: n.position };\n    if (n.webhookId) clean.webhookId = n.webhookId;\n    return clean;\n  });\n\n  // Update the catalog in cleanNodes\n  for (const node of cleanNodes) {\n    if (node.parameters && node.parameters.name === 'execute_action') {\n      node.parameters.description = catalog;\n      break;\n    }\n  }\n\n  let updateSuccess = false;\n  let updateError = '';\n  try {\n    await this.helpers.httpRequest({\n      method: 'PUT',\n      url: `${BASE}/workflows/42BsiQ2R7nstxydY`,\n      headers: { ...headers, 'Content-Type': 'application/json' },\n      body: { name: wf.name, nodes: cleanNodes, connections: wf.connections, settings: wf.settings }\n    });\n    updateSuccess = true;\n  } catch(e) {\n    updateError = e.message;\n    // Fallback: send Slack alert with the diff\n    try {\n      await this.helpers.httpRequest({\n        method: 'POST', url: GW, headers: gwHeaders,\n        body: { domain: 'slack', action: 'send', client: 'ascend', params: {\n          channel: 'all-ascendgtm',\n          text: '*PLATFORM_CATALOG_SYNC*: Catalog changed (' + domains.length + ' domains, ' + enabledActions.length + ' actions, ' + catalog.length + ' chars) but auto-update failed: ' + updateError + '. Manual update needed on workflow 42BsiQ2R7nstxydY execute_action description.'\n        }}\n      });\n    } catch(e2) {}\n  }\n\n  // 6. Log\n  try {\n    await this.helpers.httpRequest({\n      method: 'POST', url: GW, headers: gwHeaders,\n      body: { domain: 'handover', action: 'log_change', client: 'ascend', params: {\n        workflow_name: 'PLATFORM_CATALOG_SYNC',\n        change_type: updateSuccess ? 'catalog_refresh' : 'catalog_refresh_failed',\n        description: (updateSuccess ? 'Auto-refreshed' : 'Generated but PUT failed') + ': ' + domains.length + ' domains, ' + enabledActions.length + ' actions, ' + catalog.length + ' chars',\n        date: new Date().toISOString()\n      }}\n    });\n  } catch(e) {}\n\n  return [{ json: {\n    success: updateSuccess,\n    auto_updated: updateSuccess,\n    update_error: updateError || undefined,\n    domains: domains.length,\n    enabled_actions: enabledActions.length,\n    catalog_length: catalog.length,\n    old_length: currentDesc.length,\n    delta: catalog.length - currentDesc.length\n  }}];\n} catch (err) {\n  return [{ json: { success: false, error: err.message, stack: String(err.stack).substring(0, 500) } }];\n}\n"
+        },
+        "name": "Sync Catalog",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          540,
+          0
+        ],
+        "id": "52b9e6f5-5a08-4485-8c66-14642fe8746f"
+      }
+    ],
+    "connections": {
+      "Daily 2AM UTC": {
+        "main": [
+          [
+            {
+              "node": "Load Config",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Manual Test": {
+        "main": [
+          [
+            {
+              "node": "Load Config",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Webhook Trigger": {
+        "main": [
+          [
+            {
+              "node": "Load Config",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Load Config": {
+        "main": [
+          [
+            {
+              "node": "Sync Catalog",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "saveManualExecutions": true,
+      "callerPolicy": "any",
+      "errorWorkflow": "4l0H7MgNyOHbYPbO",
+      "availableInMCP": false
+    }
+  }
+}
