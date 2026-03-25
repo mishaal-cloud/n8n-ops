@@ -1,0 +1,48 @@
+{
+  "snapshot_at": "2026-03-25T22:19:23.662Z",
+  "reason": "Pre-modification snapshot: Restore full workflow with all 5 nodes including webhook trigger",
+  "session_id": "unknown-session",
+  "workflow": {
+    "name": "PLATFORM_CATALOG_SYNC",
+    "id": "Cux5dXK9MhhfDDxa",
+    "active": false,
+    "nodes": [
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "catalog-sync",
+          "options": {}
+        },
+        "name": "Webhook Trigger",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2,
+        "position": [
+          0,
+          -220
+        ],
+        "webhookId": "catalog-sync-webhook",
+        "id": "b60526ff-73b9-48cd-96b9-9a23a206a6c5"
+      }
+    ],
+    "connections": {
+      "Webhook Trigger": {
+        "main": [
+          [
+            {
+              "node": "Load Config",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "saveManualExecutions": true,
+      "callerPolicy": "any",
+      "errorWorkflow": "4l0H7MgNyOHbYPbO",
+      "availableInMCP": false
+    }
+  }
+}
