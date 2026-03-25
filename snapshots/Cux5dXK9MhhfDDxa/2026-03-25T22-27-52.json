@@ -1,0 +1,154 @@
+{
+  "snapshot_at": "2026-03-25T22:27:52.732Z",
+  "reason": "Pre-modification snapshot: Debug: detailed step-by-step error reporting",
+  "session_id": "unknown-session",
+  "workflow": {
+    "name": "PLATFORM_CATALOG_SYNC",
+    "id": "Cux5dXK9MhhfDDxa",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "cronExpression",
+                "expression": "0 2 * * *"
+              }
+            ]
+          }
+        },
+        "name": "Daily 2AM UTC",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          0,
+          0
+        ],
+        "id": "0b616489-76f5-45a5-a157-7154a2ba455c"
+      },
+      {
+        "parameters": {},
+        "name": "Manual Test",
+        "type": "n8n-nodes-base.manualTrigger",
+        "typeVersion": 1,
+        "position": [
+          0,
+          220
+        ],
+        "id": "5c40aa03-ada8-4506-b2b4-7ebff44fbb9d"
+      },
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "catalog-sync",
+          "responseMode": "lastNode",
+          "options": {}
+        },
+        "name": "Webhook Trigger",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2,
+        "position": [
+          0,
+          -220
+        ],
+        "webhookId": "catalog-sync-wh",
+        "id": "c3173d5a-1cd8-4f11-9c57-a3ae93958f94"
+      },
+      {
+        "parameters": {
+          "assignments": {
+            "assignments": [
+              {
+                "id": "c1",
+                "name": "apiKey",
+                "value": "={{ $vars.N8N_API_KEY }}",
+                "type": "string"
+              },
+              {
+                "id": "c2",
+                "name": "masterKey",
+                "value": "={{ $vars.key_master }}",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "name": "Load Config",
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3.4,
+        "position": [
+          280,
+          0
+        ],
+        "id": "20945c93-a5f1-4a2d-93f4-4e8324bbe4e8"
+      },
+      {
+        "parameters": {
+          "jsCode": "try {\n  const cfg = $input.first().json;\n  if (!cfg.apiKey) return [{ json: { error: 'N8N_API_KEY is empty/undefined' } }];\n  const BASE = 'https://mmurawala.app.n8n.cloud/api/v1';\n  const headers = { 'X-N8N-API-KEY': cfg.apiKey };\n\n  const regResp = await this.helpers.httpRequest({ method: 'GET', url: `${BASE}/data-tables/8uXPK6pD52xG90Y0/rows?limit=250`, headers });\n  const rows1 = regResp.data || regResp;\n  const domains = (Array.isArray(rows1) ? rows1 : []).filter(r => String(r.enabled) === 'true');\n\n  let allActions = [];\n  let offset = 0;\n  while (true) {\n    const resp = await this.helpers.httpRequest({ method: 'GET', url: `${BASE}/data-tables/nTBOiE9byj3KcHVQ/rows?limit=250&offset=${offset}`, headers });\n    const rows = resp.data || resp;\n    const arr = Array.isArray(rows) ? rows : [];\n    allActions = allActions.concat(arr);\n    if (arr.length < 250) break;\n    offset += 250;\n  }\n  const enabledActions = allActions.filter(a => String(a.enabled) === 'true');\n\n  const categoryMap = {};\n  for (const d of domains) {\n    const cat = (d.category || 'OTHER').toUpperCase();\n    if (!categoryMap[cat]) categoryMap[cat] = [];\n    const acts = enabledActions.filter(a => a.api_name === d.api_name).map(a => a.action).sort();\n    if (acts.length > 0) categoryMap[cat].push(d.api_name + '(' + acts.join(',') + ')');\n  }\n\n  const ORDER = ['AI','CRM','PRODUCTIVITY','MARKETING','ANALYTICS','CMS','CREATIVE','DEPLOYMENT'];\n  let catalog = 'Execute any API action through the gateway. Input: domain (string), action (string), client (string - \\'kahuna\\' or \\'ascend\\'), params (object - action-specific parameters).\\n\\nAVAILABLE DOMAINS AND ACTIONS (call directly \\u2014 no need for list_domains/list_actions/get_action_schema first):\\n\\n';\n  for (const cat of ORDER) {\n    if (categoryMap[cat] && categoryMap[cat].length > 0) {\n      catalog += cat + ': ' + categoryMap[cat].join(' | ') + '\\n\\n';\n      delete categoryMap[cat];\n    }\n  }\n  for (const cat of Object.keys(categoryMap).sort()) {\n    if (categoryMap[cat].length > 0) catalog += cat + ': ' + categoryMap[cat].join(' | ') + '\\n\\n';\n  }\n  catalog += 'PARAM HINTS: For \\'passthrough\\' domains (AI, Apollo, Gong, Semrush, Vercel, etc), params go directly as the API body. For \\'handler\\' domains (HubSpot, Google, Slack, etc), check get_action_schema if unsure about required params.';\n\n  const wf = await this.helpers.httpRequest({ method: 'GET', url: `${BASE}/workflows/42BsiQ2R7nstxydY`, headers });\n  let found = false, oldLen = 0;\n  for (const node of wf.nodes) {\n    if (node.parameters && node.parameters.name === 'execute_action') {\n      oldLen = (node.parameters.description || '').length;\n      if (node.parameters.description === catalog) {\n        return [{ json: { success: true, skipped: true, reason: 'catalog_unchanged', catalog_length: catalog.length, domains: domains.length, actions: enabledActions.length } }];\n      }\n      node.parameters.description = catalog;\n      found = true;\n      break;\n    }\n  }\n  if (!found) return [{ json: { error: 'execute_action node not found' } }];\n\n  await this.helpers.httpRequest({ method: 'PUT', url: `${BASE}/workflows/42BsiQ2R7nstxydY`, headers: { ...headers, 'Content-Type': 'application/json' }, body: { name: wf.name, nodes: wf.nodes, connections: wf.connections, settings: wf.settings } });\n\n  try { await this.helpers.httpRequest({ method: 'POST', url: 'https://mmurawala.app.n8n.cloud/webhook/orchestrate-v2', headers: { 'Content-Type': 'application/json', 'x-api-key': cfg.masterKey }, body: { domain: 'handover', action: 'log_change', client: 'ascend', params: { workflow_name: 'PLATFORM_CATALOG_SYNC', change_type: 'catalog_refresh', description: 'Auto-refreshed: ' + domains.length + ' domains, ' + enabledActions.length + ' actions, ' + catalog.length + ' chars', date: new Date().toISOString() } } }); } catch(e) {}\n\n  return [{ json: { success: true, domains: domains.length, enabled_actions: enabledActions.length, catalog_length: catalog.length, old_length: oldLen } }];\n} catch (err) {\n  return [{ json: { success: false, error: err.message, stack: String(err.stack).substring(0, 500) } }];\n}"
+        },
+        "name": "Sync Catalog",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          540,
+          0
+        ],
+        "id": "d5049430-58e7-4128-aea8-0015a3abf03b"
+      }
+    ],
+    "connections": {
+      "Daily 2AM UTC": {
+        "main": [
+          [
+            {
+              "node": "Load Config",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Manual Test": {
+        "main": [
+          [
+            {
+              "node": "Load Config",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Webhook Trigger": {
+        "main": [
+          [
+            {
+              "node": "Load Config",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Load Config": {
+        "main": [
+          [
+            {
+              "node": "Sync Catalog",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "saveManualExecutions": true,
+      "callerPolicy": "any",
+      "errorWorkflow": "4l0H7MgNyOHbYPbO",
+      "availableInMCP": false
+    }
+  }
+}
