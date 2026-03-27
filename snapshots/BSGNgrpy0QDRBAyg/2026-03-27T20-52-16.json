@@ -1,0 +1,259 @@
+{
+  "snapshot_at": "2026-03-27T20:52:16.195Z",
+  "reason": "Pre-modification snapshot: No reason provided",
+  "session_id": "unknown-session",
+  "workflow": {
+    "name": "PLATFORM_CONTRACT_TEST",
+    "id": "BSGNgrpy0QDRBAyg",
+    "active": true,
+    "nodes": [
+      {
+        "id": "ct1",
+        "name": "Daily 6am CT",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          200,
+          300
+        ],
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "days",
+                "triggerAtHour": 11,
+                "triggerAtMinute": 0
+              }
+            ]
+          }
+        }
+      },
+      {
+        "id": "ct1b",
+        "name": "On-Demand Trigger",
+        "type": "n8n-nodes-base.manualTrigger",
+        "typeVersion": 1,
+        "position": [
+          200,
+          500
+        ],
+        "parameters": {}
+      },
+      {
+        "id": "ct2",
+        "name": "Load Contracts",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          440,
+          400
+        ],
+        "parameters": {
+          "method": "GET",
+          "url": "=https://mmurawala.app.n8n.cloud/api/v1/data-tables/FoDXMz7R7heJHPHH/rows",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "X-N8N-API-KEY",
+                "value": "={{ $vars.N8N_INTERNAL_API_KEY }}"
+              }
+            ]
+          },
+          "options": {
+            "timeout": 10000
+          }
+        }
+      },
+      {
+        "id": "ct2b",
+        "name": "Extract Rows",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          600,
+          400
+        ],
+        "parameters": {
+          "jsCode": "const resp = $input.first().json;\nconst rows = resp.data || resp.rows || resp || [];\nreturn rows.map(r => ({ json: r }));"
+        }
+      },
+      {
+        "id": "ct3",
+        "name": "Test Each Contract",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          780,
+          400
+        ],
+        "parameters": {
+          "jsCode": "const contracts = $input.all().map(i => i.json);\nconst results = [];\nconst tokenMap = {\n  '$KEY_MASTER': $vars.key_master || '',\n  '$N8N_INTERNAL_API_KEY': $vars.N8N_INTERNAL_API_KEY || '',\n  '$HINDSIGHT_MCP_TOKEN': $vars.HINDSIGHT_MCP_TOKEN || ''\n};\nconst overrides = {\n  'ascend_mcp_server/mcp_sse': { url: 'https://mcp.ascendgtm.net/health', endpoint_name: 'health' },\n  'n8n_gateway/gateway_routing': { url: 'https://mmurawala.app.n8n.cloud/webhook/orchestrate-v2', test_body: '{\"domain\":\"handover\",\"action\":\"list_variables\",\"client\":\"system\",\"params\":{}}' },\n  'hindsight/health': { url: 'https://hindsight.ascendgtm.net/health' },\n  'hindsight/recall_mcp': { url: 'https://hindsight.ascendgtm.net/mcp/', auth_header: 'Bearer $HINDSIGHT_MCP_TOKEN' },\n  'hindsight/list_banks_mcp': { url: 'https://hindsight.ascendgtm.net/mcp/', auth_header: 'Bearer $HINDSIGHT_MCP_TOKEN' }\n};\nfor (const c of contracts) {\n  const key = c.service + '/' + c.endpoint_name;\n  if (overrides[key]) { Object.assign(c, overrides[key]); }\n  const start = Date.now();\n  let status = 'PASS', detail = '', httpStatus = 0, schemaOk = true;\n  try {\n    const headers = { 'Content-Type': 'application/json' };\n    if (c.auth_header) {\n      const parts = c.auth_header.split(' ');\n      if (parts[0] === 'Bearer') headers['Authorization'] = 'Bearer ' + (tokenMap['$' + parts[1]] || tokenMap[parts[1]] || parts[1]);\n      else if (parts[0] === 'x-api-key') headers['x-api-key'] = tokenMap['$' + parts[1]] || tokenMap[parts[1]] || parts[1];\n    }\n    const reqOpts = { method: c.method || 'GET', uri: c.url, headers, resolveWithFullResponse: true, simple: false, timeout: 15000 };\n    if (c.test_body && c.method !== 'GET') reqOpts.body = c.test_body;\n    const resp = await this.helpers.request(reqOpts);\n    httpStatus = resp.statusCode;\n    const latency = Date.now() - start;\n    if (c.expected_status && httpStatus !== Number(c.expected_status)) { status = 'FAIL'; detail = 'Expected HTTP ' + c.expected_status + ', got ' + httpStatus; }\n    if (status === 'PASS' && c.expected_keys && httpStatus < 400) {\n      try {\n        const body = typeof resp.body === 'string' ? JSON.parse(resp.body) : resp.body;\n        const keys = c.expected_keys.split(',').map(k => k.trim()).filter(k => k);\n        const missing = keys.filter(k => !(k in body));\n        if (missing.length > 0) { status = 'FAIL'; detail = 'Missing keys: ' + missing.join(', '); schemaOk = false; }\n      } catch (e) { status = 'FAIL'; detail = 'Response not valid JSON'; schemaOk = false; }\n    }\n    if (status === 'PASS') detail = 'HTTP ' + httpStatus + ' in ' + latency + 'ms';\n    results.push({ service: c.service, endpoint: c.endpoint_name, status, detail, http_status: httpStatus, latency_ms: latency, critical: !!c.critical, schema_ok: schemaOk });\n  } catch (e) {\n    results.push({ service: c.service, endpoint: c.endpoint_name, status: 'FAIL', detail: String(e.message || e).substring(0, 150), http_status: 0, latency_ms: Date.now() - start, critical: !!c.critical, schema_ok: false });\n  }\n}\nconst failed = results.filter(r => r.status === 'FAIL');\nconst criticalFailed = failed.filter(r => r.critical);\nconst allOk = failed.length === 0;\nlet severity = ':white_check_mark:', headline = 'All ' + results.length + ' contracts passing';\nif (criticalFailed.length > 0) { severity = ':rotating_light:'; headline = criticalFailed.length + ' CRITICAL contract(s) FAILED'; }\nelse if (failed.length > 0) { severity = ':warning:'; headline = failed.length + ' non-critical contract(s) failed'; }\nconst lines = results.map(r => '\\u2022 ' + (r.status === 'PASS' ? '\\u2705' : (r.critical ? '\\ud83d\\udd34' : '\\ud83d\\udfe1')) + ' ' + r.service + '/' + r.endpoint + ': ' + r.detail).join('\\n');\nconst slackText = severity + ' *Integration Contract Test* \\u2014 ' + headline + '\\n' + lines;\nreturn [{ json: { results, failed, criticalFailed, allOk, total: results.length, failed_count: failed.length, critical_failed_count: criticalFailed.length, slack_text: slackText, timestamp: new Date().toISOString() } }];"
+        }
+      },
+      {
+        "id": "ct4",
+        "name": "Has Failures?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          1000,
+          400
+        ],
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "combinator": "and",
+            "conditions": [
+              {
+                "id": "cond1",
+                "leftValue": "={{ $json.failed_count }}",
+                "rightValue": 0,
+                "operator": {
+                  "type": "number",
+                  "operation": "gt"
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "id": "ct5",
+        "name": "Alert Slack (failures)",
+        "type": "n8n-nodes-base.slack",
+        "typeVersion": 2.2,
+        "position": [
+          1240,
+          300
+        ],
+        "credentials": {
+          "slackOAuth2Api": {
+            "id": "Td6a13CD9P2O5K2U",
+            "name": "SLACK_OAUTH_ACCOUNT"
+          }
+        },
+        "parameters": {
+          "authentication": "oAuth2",
+          "select": "channel",
+          "channelId": {
+            "__rl": true,
+            "value": "#n8n-alerts",
+            "mode": "name"
+          },
+          "text": "={{ $json.slack_text }}",
+          "otherOptions": {}
+        }
+      },
+      {
+        "id": "ct6",
+        "name": "Log to Changelog",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1240,
+          500
+        ],
+        "parameters": {
+          "jsCode": "const data = $json;\ntry {\n  const logBody = JSON.stringify({ domain: 'handover', action: 'datatable_insert', client: 'system', params: { table_id: 'kqKrSqKSsu8UbU89', rows: [{ timestamp: data.timestamp || new Date().toISOString(), category: 'contract_test', domain: 'platform', summary: 'Contract test: ' + (data.total||0) + ' tested, ' + (data.failed_count||0) + ' failed (' + (data.critical_failed_count||0) + ' critical)', details: JSON.stringify((data.failed || []).map(f => f.service + '/' + f.endpoint + ': ' + f.detail)), session_id: 'automated' }] } });\n  await this.helpers.request({ method: 'POST', uri: 'https://mmurawala.app.n8n.cloud/webhook/orchestrate-v2', headers: { 'Content-Type': 'application/json', 'x-api-key': $vars.key_master }, body: logBody, timeout: 10000 });\n} catch (e) {}\nreturn [{ json: { logged: true, total: data.total, failed: data.failed_count } }];"
+        }
+      }
+    ],
+    "connections": {
+      "Daily 6am CT": {
+        "main": [
+          [
+            {
+              "node": "Load Contracts",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "On-Demand Trigger": {
+        "main": [
+          [
+            {
+              "node": "Load Contracts",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Load Contracts": {
+        "main": [
+          [
+            {
+              "node": "Extract Rows",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Extract Rows": {
+        "main": [
+          [
+            {
+              "node": "Test Each Contract",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Test Each Contract": {
+        "main": [
+          [
+            {
+              "node": "Has Failures?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Has Failures?": {
+        "main": [
+          [
+            {
+              "node": "Alert Slack (failures)",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Log to Changelog",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Alert Slack (failures)": {
+        "main": [
+          [
+            {
+              "node": "Log to Changelog",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "callerPolicy": "workflowsFromSameOwner",
+      "availableInMCP": false,
+      "errorWorkflow": "4l0H7MgNyOHbYPbO"
+    }
+  }
+}
