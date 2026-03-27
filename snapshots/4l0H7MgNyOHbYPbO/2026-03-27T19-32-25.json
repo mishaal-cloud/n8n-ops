@@ -1,0 +1,446 @@
+{
+  "snapshot_at": "2026-03-27T19:32:25.233Z",
+  "reason": "Pre-modification snapshot: No reason provided",
+  "session_id": "unknown-session",
+  "workflow": {
+    "name": "Platform — Global Error Handler",
+    "id": "4l0H7MgNyOHbYPbO",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {},
+        "id": "n1",
+        "name": "Error Trigger",
+        "type": "n8n-nodes-base.errorTrigger",
+        "typeVersion": 1,
+        "position": [
+          250,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "const item = $input.first().json;\nconst execution = item.execution || {};\nconst workflow = item.workflow || {};\nconst error = execution.error || {};\nconst cause = error.cause || {};\n\nconst errorMessage = error.message || 'Unknown error';\nconst msg = errorMessage.toLowerCase();\nconst statusCode = cause.status || cause.statusCode || 0;\nconst lastNode = execution.lastNodeExecuted || 'unknown';\nconst executionId = execution.id || 'unknown';\nconst executionUrl = execution.url || '';\nconst executionMode = execution.mode || 'unknown';\nconst retryOf = execution.retryOf || null;\nconst workflowId = workflow.id || 'unknown';\nconst workflowName = workflow.name || 'unknown';\n\n// Transient: safe to auto-retry\nconst isTransient = (\n  msg.includes('429') || msg.includes('rate limit') || msg.includes('503') ||\n  msg.includes('timeout') || msg.includes('timed out') || msg.includes('econnaborted') ||\n  msg.includes('econnreset') || msg.includes('socket hang up') || msg.includes('502')\n);\n\n// Granular error category (from payload)\nlet error_category = 'unknown';\nif (statusCode === 401 || statusCode === 403 ||\n    msg.includes('unauthorized') || msg.includes('forbidden') ||\n    msg.includes('authentication') || msg.includes('invalid token') || msg.includes('credential')) {\n  error_category = 'auth_error';\n} else if (statusCode === 429 || msg.includes('rate limit') ||\n    msg.includes('too many requests') || msg.includes('quota exceeded')) {\n  error_category = 'rate_limit';\n} else if (msg.includes('timeout') || msg.includes('timed out') ||\n    msg.includes('econnaborted') || msg.includes('econnreset') || msg.includes('socket hang up')) {\n  error_category = 'timeout';\n} else if (statusCode >= 500) {\n  error_category = 'api_error_5xx';\n} else if (statusCode === 400 || statusCode === 422 ||\n    msg.includes('validation') || msg.includes('invalid')) {\n  error_category = 'validation_error';\n} else if (statusCode >= 400 && statusCode < 500) {\n  error_category = 'api_error_4xx';\n} else if (msg.includes('cannot read') || msg.includes('is not a function') ||\n    msg.includes('is not defined') || msg.includes('null')) {\n  error_category = 'code_error';\n} else if (errorMessage) {\n  error_category = 'runtime_error';\n}\n\n// Severity (from workflow name convention)\nconst nl = workflowName.toLowerCase();\nlet severity = 'MEDIUM';\nif (nl.includes('gateway') || nl.includes('handover') || nl.includes('backup') || nl.includes('orchestrate')) {\n  severity = 'CRITICAL';\n} else if (nl.includes('handler') || nl.includes('crm') || nl.includes('ads') ||\n    nl.includes('analytics') || nl.includes('google suite') || nl.includes('platform') ||\n    nl.includes('catalog') || nl.includes('doc sync')) {\n  severity = 'HIGH';\n} else if (nl.includes('test') || nl.includes('dev') || nl.includes('debug')) {\n  severity = 'LOW';\n}\n\n// Category overrides: auth errors always critical, code errors always high\nif (error_category === 'auth_error') severity = 'CRITICAL';\nif (error_category === 'code_error' && severity !== 'CRITICAL') severity = 'HIGH';\n\nreturn [{ json: {\n  execution_id: executionId,\n  execution_url: executionUrl,\n  execution_mode: executionMode,\n  retry_of: retryOf,\n  workflow_id: workflowId,\n  workflow_name: workflowName,\n  node_name: lastNode,\n  error_message: errorMessage,\n  error_category,\n  severity,\n  is_transient: isTransient,\n  timestamp: new Date().toISOString()\n} }];"
+        },
+        "id": "n2",
+        "name": "Extract Context",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          480,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "const item = $input.first().json;\nconst s = item.severity;\nif (s === 'CRITICAL') return [{ json: { ...item, _route: 'critical' } }];\nif (s === 'HIGH') return [{ json: { ...item, _route: 'high' } }];\nif (s === 'MEDIUM') return [{ json: { ...item, _route: 'medium' } }];\nreturn [{ json: { ...item, _route: 'low' } }];"
+        },
+        "id": "n3",
+        "name": "Classify Route",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          720,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "leftValue": "={{ $json.severity }}",
+                "rightValue": "CRITICAL",
+                "operator": {
+                  "type": "string",
+                  "operation": "equals"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        },
+        "id": "n3a",
+        "name": "Is Critical",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.2,
+        "position": [
+          940,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://slack.com/api/chat.postMessage",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "slackOAuth2Api",
+          "sendHeaders": false,
+          "headerParameters": {
+            "parameters": []
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\"channel\":\"#n8n-alerts\",\"text\":\":rotating_light: CRITICAL: {{ $json.workflow_name }}\",\"blocks\":[{\"type\":\"header\",\"text\":{\"type\":\"plain_text\",\"text\":\":rotating_light: CRITICAL n8n Error\",\"emoji\":true}},{\"type\":\"section\",\"fields\":[{\"type\":\"mrkdwn\",\"text\":\"*Workflow:*\\n{{ $json.workflow_name }}\"},{\"type\":\"mrkdwn\",\"text\":\"*Node:*\\n{{ $json.node_name }}\"}]},{\"type\":\"section\",\"fields\":[{\"type\":\"mrkdwn\",\"text\":\"*Category:*\\n{{ $json.error_category }}\"},{\"type\":\"mrkdwn\",\"text\":\"*Transient:*\\n{{ $json.is_transient }}\"}]},{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"*Error:*\\n```{{ $json.error_message }}```\"}},{\"type\":\"actions\",\"elements\":[{\"type\":\"button\",\"text\":{\"type\":\"plain_text\",\"text\":\"View Execution\",\"emoji\":true},\"url\":\"{{ $json.execution_url }}\",\"action_id\":\"view_execution\"}]}]}",
+          "options": {
+            "timeout": 10000
+          }
+        },
+        "id": "n4",
+        "name": "Slack Critical Alert",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1180,
+          200
+        ],
+        "continueOnFail": true,
+        "credentials": {
+          "slackOAuth2Api": {
+            "id": "Td6a13CD9P2O5K2U",
+            "name": "SLACK_OAUTH_ACCOUNT"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "leftValue": "={{ $json.severity }}",
+                "rightValue": "HIGH",
+                "operator": {
+                  "type": "string",
+                  "operation": "equals"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        },
+        "id": "n3b",
+        "name": "Is High",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.2,
+        "position": [
+          1180,
+          400
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://slack.com/api/chat.postMessage",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "slackOAuth2Api",
+          "sendHeaders": false,
+          "headerParameters": {
+            "parameters": []
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\"channel\":\"#n8n-alerts\",\"text\":\":warning: HIGH: {{ $json.workflow_name }}\",\"blocks\":[{\"type\":\"header\",\"text\":{\"type\":\"plain_text\",\"text\":\":warning: HIGH n8n Error\",\"emoji\":true}},{\"type\":\"section\",\"fields\":[{\"type\":\"mrkdwn\",\"text\":\"*Workflow:*\\n{{ $json.workflow_name }}\"},{\"type\":\"mrkdwn\",\"text\":\"*Node:*\\n{{ $json.node_name }}\"}]},{\"type\":\"section\",\"fields\":[{\"type\":\"mrkdwn\",\"text\":\"*Category:*\\n{{ $json.error_category }}\"},{\"type\":\"mrkdwn\",\"text\":\"*Transient:*\\n{{ $json.is_transient }}\"}]},{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"*Error:*\\n```{{ $json.error_message }}```\"}},{\"type\":\"actions\",\"elements\":[{\"type\":\"button\",\"text\":{\"type\":\"plain_text\",\"text\":\"View Execution\",\"emoji\":true},\"url\":\"{{ $json.execution_url }}\",\"action_id\":\"view_execution\"}]}]}",
+          "options": {
+            "timeout": 10000
+          }
+        },
+        "id": "n5",
+        "name": "Slack High Alert",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1420,
+          350
+        ],
+        "continueOnFail": true,
+        "credentials": {
+          "slackOAuth2Api": {
+            "id": "Td6a13CD9P2O5K2U",
+            "name": "SLACK_OAUTH_ACCOUNT"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "leftValue": "={{ $json.is_transient }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "true"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        },
+        "id": "n8",
+        "name": "Is Transient",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.2,
+        "position": [
+          1660,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "const item = $input.first().json;\nconst eid = item.execution_id;\nconst mode = item.execution_mode;\nconst retryOf = item.retry_of;\n\n// Never retry if already a retry, or no execution ID\nif (!eid || eid === 'unknown' || mode === 'retry' || retryOf) {\n  const reason = (!eid || eid === 'unknown') ? 'no_execution_id'\n    : (mode === 'retry') ? 'already_a_retry'\n    : 'is_retry_of_' + retryOf;\n  return [{ json: { ...item, retry_status: 'skipped', skip_reason: reason } }];\n}\n\nreturn [{ json: {\n  ...item,\n  retry_status: 'queued',\n  retry_url: $vars.N8N_HOST + '/api/v1/executions/' + eid + '/retry'\n} }];"
+        },
+        "id": "n9",
+        "name": "Queue Retry",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1880,
+          200
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $json.retry_url }}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "X-N8N-API-KEY",
+                "value": "={{ $vars.N8N_INTERNAL_API_KEY }}"
+              }
+            ]
+          },
+          "options": {
+            "timeout": 15000
+          }
+        },
+        "id": "n10",
+        "name": "Execute Retry",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          2100,
+          200
+        ],
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "// Pull from Extract Context directly — Slack continueOnFail can corrupt $input\nconst item = $('Extract Context').first().json;\nconst errMsg = item.error_message || 'Unknown error';\nconst severity = item.severity || 'UNKNOWN';\nconst wfName = item.workflow_name || 'unknown';\nconst errorCategory = item.error_category || 'unknown';\n\nlet retryStatus = 'none';\ntry { retryStatus = $input.first().json.retry_status || 'none'; } catch(e) {}\n\nreturn [{ json: {\n  timestamp: new Date().toISOString(),\n  category: 'error',\n  domain: wfName,\n  summary: '[' + severity + '][' + errorCategory + '] ' + wfName + ': ' + errMsg.substring(0, 100),\n  details: JSON.stringify({\n    eid: item.execution_id || 'unknown',\n    wid: item.workflow_id || 'unknown',\n    node: item.node_name || 'unknown',\n    err: errMsg,\n    sev: severity,\n    cat: errorCategory,\n    trans: item.is_transient || false,\n    retry: retryStatus\n  }),\n  session_id: 'global-error-handler'\n} }];"
+        },
+        "id": "n11",
+        "name": "Prepare Log Entry",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1880,
+          500
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $vars.N8N_HOST }}/webhook/orchestrate-v2",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "name": "x-api-key",
+                "value": "={{ $vars.key_master }}"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\"domain\":\"handover\",\"action\":\"log_change\",\"client\":\"ascend\",\"params\":{\"timestamp\":\"{{ $json.timestamp }}\",\"category\":\"{{ $json.category }}\",\"domain\":\"{{ $json.domain }}\",\"summary\":\"{{ $json.summary }}\",\"details\":\"{{ $json.details }}\",\"session_id\":\"{{ $json.session_id }}\"}}",
+          "options": {
+            "timeout": 15000
+          }
+        },
+        "id": "n12",
+        "name": "Log to Changelog",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          2100,
+          500
+        ],
+        "continueOnFail": true
+      }
+    ],
+    "connections": {
+      "Error Trigger": {
+        "main": [
+          [
+            {
+              "node": "Extract Context",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Extract Context": {
+        "main": [
+          [
+            {
+              "node": "Classify Route",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Classify Route": {
+        "main": [
+          [
+            {
+              "node": "Is Critical",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Is Critical": {
+        "main": [
+          [
+            {
+              "node": "Slack Critical Alert",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Is High",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Slack Critical Alert": {
+        "main": [
+          [
+            {
+              "node": "Is Transient",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Is High": {
+        "main": [
+          [
+            {
+              "node": "Slack High Alert",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Is Transient",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Slack High Alert": {
+        "main": [
+          [
+            {
+              "node": "Is Transient",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Is Transient": {
+        "main": [
+          [
+            {
+              "node": "Queue Retry",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Prepare Log Entry",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Queue Retry": {
+        "main": [
+          [
+            {
+              "node": "Execute Retry",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Execute Retry": {
+        "main": [
+          [
+            {
+              "node": "Prepare Log Entry",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Prepare Log Entry": {
+        "main": [
+          [
+            {
+              "node": "Log to Changelog",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "callerPolicy": "workflowsFromSameOwner",
+      "availableInMCP": false,
+      "errorWorkflow": "4l0H7MgNyOHbYPbO"
+    }
+  }
+}
