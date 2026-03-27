@@ -1,0 +1,196 @@
+{
+  "snapshot_at": "2026-03-27T20:41:44.453Z",
+  "reason": "Pre-modification snapshot: No reason provided",
+  "session_id": "unknown-session",
+  "workflow": {
+    "name": "PLATFORM_CONTRACT_TEST",
+    "id": "5qCkduxZZOoGRO3V",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "cronExpression",
+                "expression": "0 7 * * *"
+              }
+            ]
+          }
+        },
+        "id": "ct-schedule",
+        "name": "Daily 7am",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          0,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "contract-test",
+          "responseMode": "lastNode",
+          "options": {}
+        },
+        "id": "ct-webhook",
+        "name": "On-Demand Trigger",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2.1,
+        "position": [
+          0,
+          500
+        ],
+        "webhookId": "contract-test-001"
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "const tests = [];\nconst timestamp = new Date().toISOString();\ntry {\n  const resp = await this.helpers.request({\n    method: 'POST',\n    uri: 'https://mmurawala.app.n8n.cloud/webhook/platform-responder',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify({\n      workflow_id: 'CONTRACT_TEST',\n      workflow_name: 'PLATFORM_CONTRACT_TEST',\n      node_name: 'Synthetic Canary',\n      error_message: 'CONTRACT_TEST canary — not a real error',\n      error_category: 'contract_test',\n      severity: 'LOW',\n      execution_id: 'canary-' + Date.now(),\n      execution_url: '',\n      is_transient: false,\n      timestamp: timestamp\n    }),\n    resolveWithFullResponse: true,\n    simple: false,\n    timeout: 150000\n  });\n  const statusCode = resp.statusCode || 0;\n  let body = resp.body;\n  if (typeof body === 'string') { try { body = JSON.parse(body); } catch(e) {} }\n  const resolved = body && body.status === 'RESOLVED';\n  tests.push({\n    test: 'RESPONDER_WEBHOOK',\n    pass: statusCode === 200 && resolved,\n    details: resolved ? 'RESPONDER returned RESOLVED' : 'Status: ' + statusCode + ', body: ' + JSON.stringify(body).substring(0, 200)\n  });\n} catch(e) {\n  tests.push({ test: 'RESPONDER_WEBHOOK', pass: false, details: 'Error: ' + e.message });\n}\ntry {\n  const ledger = await this.helpers.request({\n    method: 'GET',\n    uri: $vars.N8N_HOST + '/api/v1/data-tables/JofPMjEUNrEu9lao/rows?limit=1',\n    headers: { 'X-N8N-API-KEY': $vars.N8N_INTERNAL_API_KEY },\n    json: true,\n    simple: false\n  });\n  tests.push({ test: 'ERROR_LEDGER_READ', pass: !!ledger && !ledger.error, details: 'Readable' });\n} catch(e) {\n  tests.push({ test: 'ERROR_LEDGER_READ', pass: false, details: e.message });\n}\ntry {\n  const fixes = await this.helpers.request({\n    method: 'GET',\n    uri: $vars.N8N_HOST + '/api/v1/data-tables/nBU0Mfop4Yqb1W7q/rows?limit=1',\n    headers: { 'X-N8N-API-KEY': $vars.N8N_INTERNAL_API_KEY },\n    json: true,\n    simple: false\n  });\n  tests.push({ test: 'KNOWN_FIXES_READ', pass: !!fixes && !fixes.error, details: 'Readable' });\n} catch(e) {\n  tests.push({ test: 'KNOWN_FIXES_READ', pass: false, details: e.message });\n}\ntry {\n  const wf = await this.helpers.request({\n    method: 'GET',\n    uri: $vars.N8N_HOST + '/api/v1/workflows/O7zDlmGScIBCTrEo',\n    headers: { 'X-N8N-API-KEY': $vars.N8N_INTERNAL_API_KEY },\n    json: true,\n    simple: false\n  });\n  tests.push({ test: 'RESPONDER_ACTIVE', pass: wf && wf.active === true, details: wf.active ? 'Active' : 'INACTIVE' });\n} catch(e) {\n  tests.push({ test: 'RESPONDER_ACTIVE', pass: false, details: e.message });\n}\ntry {\n  const gwResp = await this.helpers.request({\n    method: 'POST',\n    uri: $vars.N8N_HOST + '/webhook/orchestrate-v2',\n    headers: { 'Content-Type': 'application/json', 'x-api-key': $vars.key_master },\n    body: JSON.stringify({ domain: 'handover', action: 'list_workflows', client: 'ascend', params: { limit: 1 } }),\n    json: true,\n    simple: false,\n    timeout: 30000\n  });\n  tests.push({ test: 'GATEWAY_REACHABLE', pass: !gwResp.error, details: gwResp.error ? gwResp.error : 'Reachable' });\n} catch(e) {\n  tests.push({ test: 'GATEWAY_REACHABLE', pass: false, details: e.message });\n}\nconst allPass = tests.every(t => t.pass);\nconst failCount = tests.filter(t => !t.pass).length;\nreturn [{ json: { timestamp, allPass, failCount, totalTests: tests.length, tests } }];"
+        },
+        "id": "ct-run-tests",
+        "name": "Run Contract Tests",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          300,
+          400
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "leftValue": "={{ $json.allPass }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "equals"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        },
+        "id": "ct-check",
+        "name": "All Pass?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.2,
+        "position": [
+          580,
+          400
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://slack.com/api/chat.postMessage",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "slackOAuth2Api",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({ channel: '#n8n-alerts', text: ':x: CONTRACT TEST FAILED — ' + $json.failCount + '/' + $json.totalTests + ' tests failed', blocks: [{ type: 'header', text: { type: 'plain_text', text: ':x: Platform Contract Test FAILED', emoji: true }}, { type: 'section', text: { type: 'mrkdwn', text: '*' + $json.failCount + ' of ' + $json.totalTests + ' tests failed*\\\\n' + $json.tests.filter(t => !t.pass).map(t => ':red_circle: ' + t.test + ': ' + t.details).join('\\\\n') }}] }) }}",
+          "options": {
+            "timeout": 10000
+          }
+        },
+        "id": "ct-alert-fail",
+        "name": "Slack Failure Alert",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          820,
+          500
+        ],
+        "continueOnFail": true,
+        "credentials": {
+          "slackOAuth2Api": {
+            "id": "Td6a13CD9P2O5K2U",
+            "name": "SLACK_OAUTH_ACCOUNT"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "// On success, just return summary — no Slack spam for passing tests\nreturn [{ json: { result: 'ALL_PASS', tests: $json.totalTests, timestamp: $json.timestamp } }];"
+        },
+        "id": "ct-success",
+        "name": "Log Success",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          820,
+          300
+        ]
+      }
+    ],
+    "connections": {
+      "Daily 7am": {
+        "main": [
+          [
+            {
+              "node": "Run Contract Tests",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "On-Demand Trigger": {
+        "main": [
+          [
+            {
+              "node": "Run Contract Tests",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Run Contract Tests": {
+        "main": [
+          [
+            {
+              "node": "All Pass?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "All Pass?": {
+        "main": [
+          [
+            {
+              "node": "Log Success",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Slack Failure Alert",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "callerPolicy": "workflowsFromSameOwner",
+      "availableInMCP": false,
+      "saveManualExecutions": true,
+      "errorWorkflow": "4l0H7MgNyOHbYPbO"
+    }
+  }
+}
