@@ -1,0 +1,258 @@
+{
+  "snapshot_at": "2026-03-27T20:53:05.890Z",
+  "reason": "Pre-modification snapshot: No reason provided",
+  "session_id": "unknown-session",
+  "workflow": {
+    "name": "PLATFORM_CONTRACT_TEST",
+    "id": "5qCkduxZZOoGRO3V",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "cronExpression",
+                "expression": "0 7 * * *"
+              }
+            ]
+          }
+        },
+        "id": "ct-schedule",
+        "name": "Daily 7am",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          0,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "contract-test",
+          "responseMode": "lastNode",
+          "options": {}
+        },
+        "id": "ct-webhook",
+        "name": "On-Demand Trigger",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2.1,
+        "position": [
+          0,
+          500
+        ],
+        "webhookId": "contract-test-001"
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "const tests = [];\nconst timestamp = new Date().toISOString();\n\n// Test 1: error_ledger DataTable is readable\ntry {\n  const ledger = await this.helpers.request({\n    method: 'GET',\n    uri: $vars.N8N_HOST + '/api/v1/data-tables/JofPMjEUNrEu9lao/rows?limit=1',\n    headers: { 'X-N8N-API-KEY': $vars.N8N_INTERNAL_API_KEY },\n    json: true,\n    simple: false\n  });\n  tests.push({ test: 'ERROR_LEDGER_READ', pass: !!ledger && !ledger.error, details: 'Readable' });\n} catch(e) {\n  tests.push({ test: 'ERROR_LEDGER_READ', pass: false, details: e.message });\n}\n\n// Test 2: known_fixes DataTable is readable\ntry {\n  const fixes = await this.helpers.request({\n    method: 'GET',\n    uri: $vars.N8N_HOST + '/api/v1/data-tables/nBU0Mfop4Yqb1W7q/rows?limit=1',\n    headers: { 'X-N8N-API-KEY': $vars.N8N_INTERNAL_API_KEY },\n    json: true,\n    simple: false\n  });\n  tests.push({ test: 'KNOWN_FIXES_READ', pass: !!fixes && !fixes.error, details: 'Readable' });\n} catch(e) {\n  tests.push({ test: 'KNOWN_FIXES_READ', pass: false, details: e.message });\n}\n\n// Test 3: RESPONDER workflow is active\ntry {\n  const wf = await this.helpers.request({\n    method: 'GET',\n    uri: $vars.N8N_HOST + '/api/v1/workflows/O7zDlmGScIBCTrEo',\n    headers: { 'X-N8N-API-KEY': $vars.N8N_INTERNAL_API_KEY },\n    json: true,\n    simple: false\n  });\n  tests.push({ test: 'RESPONDER_ACTIVE', pass: wf && wf.active === true, details: wf.active ? 'Active' : 'INACTIVE' });\n} catch(e) {\n  tests.push({ test: 'RESPONDER_ACTIVE', pass: false, details: e.message });\n}\n\n// Test 4: Gateway webhook is reachable\ntry {\n  const gwResp = await this.helpers.request({\n    method: 'POST',\n    uri: $vars.N8N_HOST + '/webhook/orchestrate-v2',\n    headers: { 'Content-Type': 'application/json', 'x-api-key': $vars.key_master },\n    body: JSON.stringify({ domain: 'handover', action: 'list_workflows', client: 'ascend', params: { limit: 1 } }),\n    json: true,\n    simple: false,\n    timeout: 15000\n  });\n  tests.push({ test: 'GATEWAY_REACHABLE', pass: !gwResp.error, details: gwResp.error ? gwResp.error : 'Reachable' });\n} catch(e) {\n  tests.push({ test: 'GATEWAY_REACHABLE', pass: false, details: e.message });\n}\n\nreturn [{ json: { timestamp, tests } }];"
+        },
+        "id": "ct-fast-tests",
+        "name": "Fast API Tests",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          300,
+          400
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://mmurawala.app.n8n.cloud/webhook/platform-responder",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({ workflow_id: 'CONTRACT_TEST', workflow_name: 'PLATFORM_CONTRACT_TEST', node_name: 'Synthetic Canary', error_message: 'CONTRACT_TEST canary — not a real error', error_category: 'contract_test', severity: 'LOW', execution_id: 'canary-' + Date.now(), execution_url: '', is_transient: false, timestamp: $json.timestamp }) }}",
+          "options": {
+            "timeout": 150000,
+            "response": {
+              "response": {
+                "responseFormat": "text"
+              }
+            }
+          }
+        },
+        "id": "ct-responder-canary",
+        "name": "RESPONDER Canary",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          560,
+          400
+        ],
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "const fastTests = $('Fast API Tests').first().json.tests;\nconst timestamp = $('Fast API Tests').first().json.timestamp;\n\n// Evaluate RESPONDER canary result\nconst canaryNode = $('RESPONDER Canary').first().json;\nlet canaryPass = false;\nlet canaryDetail = '';\n\n// The response might be text (if responseFormat=text) or JSON\nconst responseData = canaryNode.data || canaryNode.body || JSON.stringify(canaryNode);\nif (typeof responseData === 'string') {\n  canaryPass = responseData.includes('RESOLVED');\n  canaryDetail = canaryPass ? 'RESPONDER returned RESOLVED' : 'No RESOLVED in response: ' + responseData.substring(0, 200);\n} else if (typeof responseData === 'object') {\n  canaryPass = responseData.status === 'RESOLVED';\n  canaryDetail = canaryPass ? 'RESPONDER returned RESOLVED' : JSON.stringify(responseData).substring(0, 200);\n} else {\n  canaryDetail = 'Unexpected response type: ' + typeof responseData;\n}\n\nfastTests.push({\n  test: 'RESPONDER_WEBHOOK',\n  pass: canaryPass,\n  details: canaryDetail\n});\n\nconst allPass = fastTests.every(t => t.pass);\nconst failCount = fastTests.filter(t => !t.pass).length;\n\nreturn [{ json: { timestamp, allPass, failCount, totalTests: fastTests.length, tests: fastTests } }];"
+        },
+        "id": "ct-merge-results",
+        "name": "Merge Results",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          780,
+          400
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "leftValue": "={{ $json.allPass }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "equals"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        },
+        "id": "ct-check",
+        "name": "All Pass?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.2,
+        "position": [
+          980,
+          400
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://slack.com/api/chat.postMessage",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "slackOAuth2Api",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({ channel: '#n8n-alerts', text: ':x: CONTRACT TEST FAILED — ' + $json.failCount + '/' + $json.totalTests + ' tests failed', blocks: [{ type: 'header', text: { type: 'plain_text', text: ':x: Platform Contract Test FAILED', emoji: true }}, { type: 'section', text: { type: 'mrkdwn', text: '*' + $json.failCount + ' of ' + $json.totalTests + ' tests failed*\\n' + $json.tests.filter(t => !t.pass).map(t => ':red_circle: ' + t.test + ': ' + t.details).join('\\n') }}] }) }}",
+          "options": {
+            "timeout": 10000
+          }
+        },
+        "id": "ct-alert-fail",
+        "name": "Slack Failure Alert",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1200,
+          500
+        ],
+        "continueOnFail": true,
+        "credentials": {
+          "slackOAuth2Api": {
+            "id": "Td6a13CD9P2O5K2U",
+            "name": "SLACK_OAUTH_ACCOUNT"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "return [{ json: { result: 'ALL_PASS', tests: $json.totalTests, timestamp: $json.timestamp } }];"
+        },
+        "id": "ct-success",
+        "name": "Log Success",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1200,
+          300
+        ]
+      }
+    ],
+    "connections": {
+      "Daily 7am": {
+        "main": [
+          [
+            {
+              "node": "Fast API Tests",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "On-Demand Trigger": {
+        "main": [
+          [
+            {
+              "node": "Fast API Tests",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fast API Tests": {
+        "main": [
+          [
+            {
+              "node": "RESPONDER Canary",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "RESPONDER Canary": {
+        "main": [
+          [
+            {
+              "node": "Merge Results",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Merge Results": {
+        "main": [
+          [
+            {
+              "node": "All Pass?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "All Pass?": {
+        "main": [
+          [
+            {
+              "node": "Log Success",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Slack Failure Alert",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "callerPolicy": "workflowsFromSameOwner",
+      "availableInMCP": false,
+      "saveManualExecutions": true,
+      "errorWorkflow": "4l0H7MgNyOHbYPbO"
+    }
+  }
+}
