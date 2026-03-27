@@ -1,0 +1,347 @@
+{
+  "snapshot_at": "2026-03-27T19:31:31.131Z",
+  "reason": "Pre-modification snapshot: No reason provided",
+  "session_id": "unknown-session",
+  "workflow": {
+    "name": "🔄 Platform — Auto-Retry Engine",
+    "id": "D5mAeRvuiw40iHTd",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "minutes",
+                "minutesInterval": 15
+              }
+            ]
+          }
+        },
+        "name": "Every 15 Minutes",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          0,
+          0
+        ],
+        "id": "5b343249-e3d9-4126-b302-86ecd1fb8e61"
+      },
+      {
+        "parameters": {
+          "url": "={{ $vars.N8N_API_URL }}/api/v1/executions",
+          "sendQuery": true,
+          "queryParameters": {
+            "parameters": [
+              {
+                "name": "status",
+                "value": "error"
+              },
+              {
+                "name": "limit",
+                "value": "20"
+              }
+            ]
+          },
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "X-N8N-API-KEY",
+                "value": "={{ $vars.N8N_INTERNAL_API_KEY }}"
+              }
+            ]
+          },
+          "options": {
+            "response": {
+              "response": {
+                "responseFormat": "json"
+              }
+            }
+          }
+        },
+        "name": "Fetch Failed Executions",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          224,
+          0
+        ],
+        "id": "d77ce36e-7dce-40ac-a996-676dad317c06"
+      },
+      {
+        "parameters": {
+          "jsCode": "// Filter retryable executions with dedup via static data\n// Prevents retry storms: each execution retried at most once\nconst executions = $input.all().map(i => i.json);\nconst data = executions[0]?.data || executions;\nconst now = Date.now();\nconst TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;\nconst FORTY_EIGHT_HOURS = 48 * 60 * 60 * 1000;\nconst MAX_BATCH = 5;\n\n// Self-exclusion: never retry our own workflow to prevent infinite loops\nconst SELF_WORKFLOW_ID = 'D5mAeRvuiw40iHTd';\n\n// Dedup: track retried execution IDs in workflow static data\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.retriedIds) staticData.retriedIds = {};\n\n// Clean entries older than 48h to prevent unbounded growth\nfor (const [id, ts] of Object.entries(staticData.retriedIds)) {\n  if (now - ts > FORTY_EIGHT_HOURS) delete staticData.retriedIds[id];\n}\n\nconst candidates = (Array.isArray(data) ? data : [])\n  .filter(e => {\n    if (!e.startedAt) return false;\n    if (staticData.retriedIds[e.id]) return false;\n    if (e.workflowId === SELF_WORKFLOW_ID) return false;\n    const age = now - new Date(e.startedAt).getTime();\n    return age < TWENTY_FOUR_HOURS;\n  })\n  .slice(0, MAX_BATCH);\n\nif (candidates.length === 0) {\n  return [{ json: { action: 'skip', reason: 'No retryable executions found', count: 0 } }];\n}\n\ncandidates.forEach(e => {\n  staticData.retriedIds[e.id] = now;\n});\n\nreturn candidates.map(e => ({\n  json: {\n    action: 'retry',\n    execution_id: e.id,\n    workflow_id: e.workflowId,\n    workflow_name: e.workflowData?.name || e.workflowId || 'unknown',\n    started_at: e.startedAt,\n    status: e.status\n  }\n}));"
+        },
+        "name": "Filter Retry Candidates",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          448,
+          0
+        ],
+        "id": "0f963306-3119-4acd-8ee2-886fd4759a6f"
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "id": "action-check",
+                "leftValue": "={{ $json.action }}",
+                "rightValue": "retry",
+                "operator": {
+                  "type": "string",
+                  "operation": "equals"
+                }
+              }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        },
+        "name": "Should Retry?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          672,
+          0
+        ],
+        "id": "fe91b177-669d-485a-a1aa-390f22c2bfd0"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $vars.N8N_API_URL }}/api/v1/executions/{{ $json.execution_id }}/retry",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "X-N8N-API-KEY",
+                "value": "={{ $vars.N8N_INTERNAL_API_KEY }}"
+              }
+            ]
+          },
+          "options": {
+            "response": {
+              "response": {
+                "responseFormat": "json"
+              }
+            },
+            "timeout": 30000
+          }
+        },
+        "name": "Retry Execution",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          880,
+          -96
+        ],
+        "id": "0c92ec01-21b9-4716-bbb0-63d824d81554",
+        "onError": "continueRegularOutput"
+      },
+      {
+        "parameters": {
+          "jsCode": "const items = $input.all();\nconst results = items.map(item => {\n  const wasError = item.json?.error || item.json?.message?.includes('error');\n  return {\n    json: {\n      execution_id: item.json?.execution_id || item.json?.id || 'unknown',\n      retry_status: wasError ? 'failed' : 'retried',\n      timestamp: new Date().toISOString(),\n      details: item.json\n    }\n  };\n});\n\nconst succeeded = results.filter(r => r.json.retry_status === 'retried').length;\nconst failed = results.filter(r => r.json.retry_status === 'failed').length;\n\nreturn [{\n  json: {\n    summary: 'Auto-retry complete: ' + succeeded + ' retried, ' + failed + ' failed',\n    succeeded,\n    failed,\n    total: results.length,\n    results: results.map(r => r.json)\n  }\n}];"
+        },
+        "name": "Log Results",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1104,
+          -96
+        ],
+        "id": "43ada78f-655c-4db5-9931-8758c66938bf"
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "loose"
+            },
+            "conditions": [
+              {
+                "id": "has-failures",
+                "leftValue": "={{ $json.failed }}",
+                "rightValue": "0",
+                "operator": {
+                  "type": "number",
+                  "operation": "gt"
+                }
+              }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        },
+        "name": "Persistent Failures?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          1328,
+          -96
+        ],
+        "id": "b65dd2dc-f94d-4397-90cc-d501c2815ddc"
+      },
+      {
+        "parameters": {
+          "authentication": "oAuth2",
+          "select": "channel",
+          "channelId": {
+            "__rl": true,
+            "value": "C0ALNMRESH4",
+            "mode": "list",
+            "cachedResultName": "n8n-alerts"
+          },
+          "text": "=:arrows_counterclockwise: *Auto-Retry Engine Report*\n{{ $json.summary }}\n\n{{ $json.failed > 0 ? ':warning: Failed retries need manual attention' : ':white_check_mark: All retries succeeded' }}\n\n_{{ new Date().toISOString() }}_",
+          "otherOptions": {}
+        },
+        "name": "Slack Alert",
+        "type": "n8n-nodes-base.slack",
+        "typeVersion": 2.2,
+        "position": [
+          1552,
+          -208
+        ],
+        "id": "8cbc4fbc-a21c-4001-9976-2e6ad7dfafeb",
+        "webhookId": "7fffa736-1408-44cc-9bec-c432618eb945",
+        "credentials": {
+          "slackOAuth2Api": {
+            "id": "Td6a13CD9P2O5K2U",
+            "name": "SLACK_OAUTH_ACCOUNT"
+          }
+        }
+      },
+      {
+        "parameters": {},
+        "name": "No Retries Needed",
+        "type": "n8n-nodes-base.noOp",
+        "typeVersion": 1,
+        "position": [
+          880,
+          112
+        ],
+        "id": "8bb4bcc7-bd51-4fbf-9ab7-17ae33811f30"
+      },
+      {
+        "parameters": {},
+        "name": "All Retries OK",
+        "type": "n8n-nodes-base.noOp",
+        "typeVersion": 1,
+        "position": [
+          1552,
+          0
+        ],
+        "id": "c0d5b742-41d8-4590-8d9d-15b1d724106a"
+      }
+    ],
+    "connections": {
+      "Every 15 Minutes": {
+        "main": [
+          [
+            {
+              "node": "Fetch Failed Executions",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fetch Failed Executions": {
+        "main": [
+          [
+            {
+              "node": "Filter Retry Candidates",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Filter Retry Candidates": {
+        "main": [
+          [
+            {
+              "node": "Should Retry?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Should Retry?": {
+        "main": [
+          [
+            {
+              "node": "Retry Execution",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "No Retries Needed",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Retry Execution": {
+        "main": [
+          [
+            {
+              "node": "Log Results",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Log Results": {
+        "main": [
+          [
+            {
+              "node": "Persistent Failures?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Persistent Failures?": {
+        "main": [
+          [
+            {
+              "node": "Slack Alert",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "All Retries OK",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "saveManualExecutions": true,
+      "callerPolicy": "workflowsFromSameOwner",
+      "errorWorkflow": "4l0H7MgNyOHbYPbO",
+      "availableInMCP": false
+    }
+  }
+}
