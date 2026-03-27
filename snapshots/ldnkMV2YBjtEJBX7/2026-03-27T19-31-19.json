@@ -1,0 +1,212 @@
+{
+  "snapshot_at": "2026-03-27T19:31:19.542Z",
+  "reason": "Pre-modification snapshot: No reason provided",
+  "session_id": "unknown-session",
+  "workflow": {
+    "name": "🎯 Reddit Intelligence Monitor",
+    "id": "ldnkMV2YBjtEJBX7",
+    "active": true,
+    "nodes": [
+      {
+        "id": "trigger-manual",
+        "name": "Manual Trigger",
+        "type": "n8n-nodes-base.manualTrigger",
+        "typeVersion": 1,
+        "position": [
+          0,
+          300
+        ],
+        "parameters": {}
+      },
+      {
+        "id": "trigger-schedule",
+        "name": "Daily 8AM ET",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          0,
+          520
+        ],
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "cronExpression",
+                "expression": "0 8 * * *"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "id": "code-search",
+        "name": "Search Reddit via Firecrawl",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          280,
+          400
+        ],
+        "parameters": {
+          "jsCode": "const keywords = JSON.parse($vars.REDDIT_MONITOR_KEYWORDS);\nconst settings = JSON.parse($vars.REDDIT_MONITOR_SETTINGS);\nconst apiKey = $vars.PERPLEXITY_API_KEY;\nconst baseUrl = $vars.FIRECRAWL_BASE_URL || 'https://api.firecrawl.dev/v2';\nconst staticData = $getWorkflowStaticData('global');\nconst seenUrls = staticData.seenUrls || {};\nconst now = new Date().toISOString();\nconst allPosts = [];\nlet totalScanned = 0;\nconst errors = [];\nlet retriesUsed = 0;\nconst scoring = { ht: 6, mt: 3, intent: ['looking for','recommend','alternative','switch from','better than','anyone use','comparison'], comps: ['apollo','instantly','clay','smartlead','lemlist','woodpecker','mailshake','outreach'] };\nasync function searchWithRetry(query, maxRetries = 3) {\n  for (let attempt = 1; attempt <= maxRetries; attempt++) {\n    try {\n      const response = await this.helpers.httpRequest({ method: 'POST', url: `${baseUrl}/search`, headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: { query, limit: 10, tbs: 'qdr:d', country: 'US' }, json: true });\n      return response;\n    } catch (err) { if (attempt < maxRetries) { retriesUsed++; await new Promise(r => setTimeout(r, Math.min(1000*Math.pow(2,attempt-1),8000))); continue; } throw err; }\n  }\n}\nfor (let i = 0; i < keywords.length; i++) {\n  const kw = keywords[i];\n  try {\n    const response = await searchWithRetry.call(this, `${kw.q} site:reddit.com`);\n    const webResults = response?.data?.web || response?.data || [];\n    totalScanned += Array.isArray(webResults) ? webResults.length : 0;\n    if (Array.isArray(webResults)) {\n      for (const result of webResults) {\n        const url = result.url || '';\n        if (!url.includes('reddit.com') || seenUrls[url]) continue;\n        let score = kw.c === 'comp' ? 3 : kw.c === 'opp' ? 2 : 1;\n        const text = `${result.title||''} ${result.description||''}`.toLowerCase();\n        for (const intent of scoring.intent) { if (text.includes(intent)) { score += 2; break; } }\n        for (const comp of scoring.comps) { if (text.includes(comp)) { score += 2; break; } }\n        if (text.includes('?')) score += 1;\n        if (text.includes('looking for') || text.includes('recommend')) score += 1;\n        score = Math.min(score, 10);\n        const subMatch = url.match(/reddit\\.com\\/r\\/([^/]+)/);\n        allPosts.push({ title: result.title||'No title', url, desc: (result.description||'').slice(0,200), sub: subMatch?subMatch[1]:'unknown', kw: kw.q, cat: kw.c, score, label: score >= scoring.ht ? 'HIGH' : score >= scoring.mt ? 'MEDIUM' : 'LOW' });\n        seenUrls[url] = now;\n      }\n    }\n  } catch (err) { errors.push({ keyword: kw.q, error: err.message||String(err) }); }\n  if (i < keywords.length - 1) await new Promise(r => setTimeout(r, 2000));\n}\nconst cutoff = new Date(Date.now() - 30*24*60*60*1000).toISOString();\nfor (const [url, date] of Object.entries(seenUrls)) { if (date < cutoff) delete seenUrls[url]; }\nstaticData.seenUrls = seenUrls;\nallPosts.sort((a, b) => b.score - a.score);\nconst high = allPosts.filter(p => p.label === 'HIGH');\nconst medium = allPosts.filter(p => p.label === 'MEDIUM');\nreturn [{ json: { totalScanned, totalMatched: allPosts.length, highCount: high.length, mediumCount: medium.length, lowCount: allPosts.filter(p => p.label === 'LOW').length, highPosts: high, mediumPosts: medium, errors, retriesUsed, cacheSize: Object.keys(seenUrls).length, timestamp: now, hasResults: high.length > 0 || medium.length > 0, tenant_id: settings.tenant_id || 'ascend_gtm', keywordsProcessed: keywords.length } }];"
+        }
+      },
+      {
+        "id": "if-results",
+        "name": "Has Results?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          560,
+          400
+        ],
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "id": "cond1",
+                "leftValue": "={{ $json.hasResults }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "true"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        }
+      },
+      {
+        "id": "code-format",
+        "name": "Format Slack Digest",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          820,
+          300
+        ],
+        "parameters": {
+          "jsCode": "const data = $json;\nconst high = data.highPosts || [];\nconst medium = data.mediumPosts || [];\nconst dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });\nconst blocks = [];\nblocks.push({ type:'header', text:{type:'plain_text',text:'Reddit Intelligence Digest',emoji:true} });\nblocks.push({ type:'context', elements:[{type:'mrkdwn',text:`:calendar: ${dateStr}  |  ${data.totalScanned} posts scanned  |  ${data.totalMatched} matched`}] });\nblocks.push({ type:'divider' });\nif (high.length > 0) {\n  blocks.push({ type:'section', text:{type:'mrkdwn',text:`:fire: *Hot Opportunities (${high.length})*`} });\n  for (const p of high.slice(0, 8)) {\n    const snippet = p.desc ? p.desc.slice(0,140) + '...' : '';\n    blocks.push({ type:'section', text:{type:'mrkdwn',text:`<${p.url}|${p.title}>\\nr/${p.sub}  |  Score: ${p.score}/10  |  Match: _${p.kw}_\\n${snippet}`} });\n  }\n  blocks.push({ type:'divider' });\n}\nif (medium.length > 0) {\n  blocks.push({ type:'section', text:{type:'mrkdwn',text:`:eyes: *Worth Watching (${medium.length})*`} });\n  const medText = medium.slice(0,8).map(p => `- <${p.url}|${p.title}> (r/${p.sub}, score ${p.score}/10, _${p.kw}_)`).join('\\n');\n  blocks.push({ type:'section', text:{type:'mrkdwn',text:medText} });\n  blocks.push({ type:'divider' });\n}\nconst subCounts = {};\nfor (const p of [...high, ...medium]) { subCounts[p.sub] = (subCounts[p.sub]||0)+1; }\nconst topSubs = Object.entries(subCounts).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([s,c])=>`r/${s} (${c})`).join(', ');\nlet statsText = `Posts scanned: ${data.totalScanned} | Matched: ${data.totalMatched} | High: ${data.highCount}`;\nif (topSubs) statsText += `\\nTop subreddits: ${topSubs}`;\nif (data.errors && data.errors.length > 0) statsText += `\\n:warning: ${data.errors.length} search(es) failed`;\nblocks.push({ type:'context', elements:[{type:'mrkdwn',text:statsText}] });\nblocks.push({ type:'context', elements:[{type:'mrkdwn',text:'_Ascend GTM  |  Reddit Intelligence  |  Daily 8 AM ET_'}] });\nconst fallback = `Reddit Intel: ${high.length} hot opportunities, ${medium.length} worth watching from ${data.totalScanned} posts`;\nreturn [{ json: { blocks: blocks.slice(0,49), text: fallback, searchData: data } }];"
+        }
+      },
+      {
+        "id": "slack-post",
+        "name": "Post to Slack",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1080,
+          300
+        ],
+        "parameters": {
+          "method": "POST",
+          "url": "https://slack.com/api/chat.postMessage",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "slackOAuth2Api",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\n  \"channel\": \"#alerts\",\n  \"text\": {{ JSON.stringify($json.text) }},\n  \"blocks\": {{ JSON.stringify($json.blocks) }}\n}",
+          "options": {
+            "timeout": 10000
+          }
+        },
+        "continueOnFail": true,
+        "credentials": {
+          "slackOAuth2Api": {
+            "id": "Td6a13CD9P2O5K2U",
+            "name": "SLACK_OAUTH_ACCOUNT"
+          }
+        }
+      },
+      {
+        "id": "no-results",
+        "name": "No New Posts",
+        "type": "n8n-nodes-base.noOp",
+        "typeVersion": 1,
+        "position": [
+          820,
+          520
+        ],
+        "parameters": {}
+      }
+    ],
+    "connections": {
+      "Manual Trigger": {
+        "main": [
+          [
+            {
+              "node": "Search Reddit via Firecrawl",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Daily 8AM ET": {
+        "main": [
+          [
+            {
+              "node": "Search Reddit via Firecrawl",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Search Reddit via Firecrawl": {
+        "main": [
+          [
+            {
+              "node": "Has Results?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Has Results?": {
+        "main": [
+          [
+            {
+              "node": "Format Slack Digest",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "No New Posts",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Format Slack Digest": {
+        "main": [
+          [
+            {
+              "node": "Post to Slack",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "timezone": "America/New_York",
+      "errorWorkflow": "4l0H7MgNyOHbYPbO",
+      "saveManualExecutions": true,
+      "callerPolicy": "workflowsFromSameOwner",
+      "availableInMCP": false
+    }
+  }
+}
