@@ -1,0 +1,55 @@
+{
+  "snapshot_at": "2026-03-27T21:15:11.157Z",
+  "reason": "Pre-modification snapshot: No reason provided",
+  "session_id": "unknown-session",
+  "workflow": {
+    "name": "SUB_GATEWAY_TOOL",
+    "id": "6yLwbfsZ1QZYOojS",
+    "active": false,
+    "nodes": [
+      {
+        "id": "gw-trigger",
+        "name": "Tool Input",
+        "type": "n8n-nodes-base.executeWorkflowTrigger",
+        "typeVersion": 1,
+        "position": [
+          0,
+          0
+        ],
+        "parameters": {}
+      },
+      {
+        "id": "gw-call",
+        "name": "Call Gateway",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          280,
+          0
+        ],
+        "parameters": {
+          "jsCode": "// Parse input from toolWorkflow v2.2\n// autoMapInputData sends the tool call's input string as {query: \"...\"}\nconst raw = $input.first().json;\n\n// toolWorkflow wraps the AI Agent's tool input in \"query\" or \"input\" field\nlet parsed = raw;\nconst inputStr = raw.query || raw.input || raw.chatInput;\n\nif (typeof inputStr === \"string\") {\n  try { parsed = JSON.parse(inputStr); } catch(e) { parsed = raw; }\n} else if (inputStr && typeof inputStr === \"object\") {\n  parsed = inputStr;\n}\n\nconst apiName = parsed.api_name;\nconst action = parsed.action;\nconst tenantId = parsed.tenant_id || $vars.DEFAULT_TENANT_ID || \"kahuna\";\nlet params = parsed.params || {};\n\nif (typeof params === \"string\") {\n  try { params = JSON.parse(params); } catch(e) { params = {}; }\n}\n\nif (!apiName || !action) {\n  return [{ json: { error: \"Missing required fields: api_name and action\", received: JSON.stringify(raw).substring(0, 500) } }];\n}\n\ntry {\n  const response = await this.helpers.httpRequest({\n    method: \"POST\",\n    url: `${$vars.N8N_API_URL}/webhook/orchestrate-v2`,\n    headers: {\n      \"Content-Type\": \"application/json\",\n      \"x-api-key\": $vars.key_master\n    },\n    body: {\n      domain: apiName,\n      action: action,\n      client: tenantId,\n      params: params\n    },\n    json: true,\n    timeout: 55000\n  });\n\n  const str = JSON.stringify(response);\n  if (str.length > 15000) {\n    const data = response.data || response.result || response;\n    const items = Array.isArray(data) ? data : (data.rows || data.results || data.items || [data]);\n    return [{ json: { _truncated: true, _total: items.length, data: items.slice(0, 20) } }];\n  }\n  return [{ json: response }];\n} catch(e) {\n  return [{ json: { error: e.message || String(e) } }];\n}\n"
+        }
+      }
+    ],
+    "connections": {
+      "Tool Input": {
+        "main": [
+          [
+            {
+              "node": "Call Gateway",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "errorWorkflow": "4l0H7MgNyOHbYPbO",
+      "callerPolicy": "workflowsFromSameOwner",
+      "availableInMCP": false
+    }
+  }
+}
