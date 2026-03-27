@@ -1,0 +1,351 @@
+{
+  "snapshot_at": "2026-03-27T19:31:22.776Z",
+  "reason": "Pre-modification snapshot: No reason provided",
+  "session_id": "unknown-session",
+  "workflow": {
+    "name": "API & Tool Intelligence Engine",
+    "id": "D3JfDjeIRia9CcAG",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "triggerAtHour": 9,
+                "triggerAtMinute": 0,
+                "triggerAtDay": 1
+              }
+            ]
+          }
+        },
+        "id": "schedule-trigger",
+        "name": "Weekly Monday 9AM",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          220,
+          300
+        ]
+      },
+      {
+        "parameters": {},
+        "id": "manual-trigger",
+        "name": "Manual Run",
+        "type": "n8n-nodes-base.manualTrigger",
+        "typeVersion": 1,
+        "position": [
+          220,
+          500
+        ]
+      },
+      {
+        "parameters": {
+          "method": "GET",
+          "url": "={{ $vars.N8N_API_URL }}/api/v1/data-tables/8uXPK6pD52xG90Y0/rows?limit=250",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "n8nApi",
+          "options": {}
+        },
+        "id": "fetch-domains",
+        "name": "Fetch Domain Registry",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          460,
+          300
+        ],
+        "credentials": {
+          "n8nApi": {
+            "id": "RxMh0WDhGkMecXO6",
+            "name": "n8n cloud account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "method": "GET",
+          "url": "={{ $vars.N8N_API_URL }}/api/v1/data-tables/nTBOiE9byj3KcHVQ/rows?limit=250",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "n8nApi",
+          "options": {}
+        },
+        "id": "fetch-actions",
+        "name": "Fetch Action Registry",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          460,
+          500
+        ],
+        "credentials": {
+          "n8nApi": {
+            "id": "RxMh0WDhGkMecXO6",
+            "name": "n8n cloud account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "mode": "combine",
+          "mergeByFields": {},
+          "combinationMode": "multiplex",
+          "options": {}
+        },
+        "id": "merge-registry",
+        "name": "Merge Registry Data",
+        "type": "n8n-nodes-base.merge",
+        "typeVersion": 3,
+        "position": [
+          700,
+          400
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const items = $input.all();\nlet domains = [];\nlet actions = [];\n\nfor (const item of items) {\n  const d = item.json;\n  if (d.data && Array.isArray(d.data) && d.data.length > 0) {\n    const first = d.data[0];\n    if (first.api_name !== undefined && first.action === undefined) {\n      domains = d.data;\n    } else if (first.action !== undefined) {\n      actions = d.data;\n    }\n  }\n}\n\nconst domainNames = [...new Set(domains.map(d => d.api_name))].sort();\nconst actionsByApi = {};\nconst actionCounts = {};\nfor (const a of actions) {\n  const api = a.api_name || 'unknown';\n  if (!actionsByApi[api]) actionsByApi[api] = [];\n  actionsByApi[api].push(a.action);\n  actionCounts[api] = (actionCounts[api] || 0) + 1;\n}\n\nconst groups = {\n  google: domainNames.filter(d => d.startsWith('google_') || ['ga4', 'gmail', 'youtube', 'google_ads', 'google_search_console', 'google_tag_manager', 'google_calendar', 'google_drive', 'google_my_business'].includes(d)),\n  ai_providers: domainNames.filter(d => ['openai', 'anthropic', 'gemini', 'groq', 'deepseek', 'perplexity', 'ollama', 'bedrock', 'huggingface', 'mistral', 'openrouter', 'qwen'].includes(d)),\n  ad_platforms: domainNames.filter(d => d.includes('ads') || ['semrush', 'twitter', 'linkedin', 'meta_ads', 'pinterest_ads', 'reddit_ads', 'x_ads'].includes(d)),\n  crm_sales: domainNames.filter(d => ['hubspot', 'salesforce', 'apollo', 'gong'].includes(d)),\n  productivity: domainNames.filter(d => ['slack', 'notion', 'outlook', 'onedrive', 'excel', 'teams'].includes(d)),\n  creative: domainNames.filter(d => ['creatomate', 'gamma', 'leonardo'].includes(d)),\n  dev_ops: domainNames.filter(d => ['github', 'vercel', 'wordpress'].includes(d)),\n  browser: domainNames.filter(d => ['browser', 'browser_use', 'browserbase', 'e2b'].includes(d))\n};\n\nconst registrySummary = Object.entries(actionCounts).sort((a,b) => b[1] - a[1]).slice(0, 30).map(([api, count]) => `${api}(${count})`).join(', ');\n\nreturn [{ json: { domainNames, actionsByApi, actionCounts, groups, registrySummary, totalDomains: domainNames.length, totalActions: actions.length, scanDate: new Date().toISOString().split('T')[0] } }];"
+        },
+        "id": "process-registry",
+        "name": "Process Registry Data",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          940,
+          400
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const registry = $input.first().json;\nconst groups = registry.groups;\nconst scanDate = registry.scanDate;\nconst actionCounts = registry.actionCounts;\nconst registrySummary = registry.registrySummary;\nconst queries = [];\nconst aiList = (groups.ai_providers || []).join(', ');\nconst aiActions = (groups.ai_providers || []).map(a => `${a}: ${actionCounts[a] || 0} actions`).join(', ');\nqueries.push({ phase: 'action_audit', category: 'AI / LLM Providers', query: `What new API endpoints, models, features, or capabilities were added by these AI providers in the last 7 days (as of ${scanDate}): ${aiList}? I currently have these action counts: ${aiActions}. Tell me SPECIFICALLY: any new API endpoints or methods added, new models released, new parameters/options on existing endpoints, pricing changes, and deprecations. Include version numbers, endpoint paths, and dates.` });\nqueries.push({ phase: 'action_audit', category: 'Google APIs', query: `Check the Google API changelogs for the last 7 days (as of ${scanDate}). APIs: Google Ads API, GA4 Data API, Search Console API, GTM API, Gmail API, Calendar API, Drive API, YouTube Data API, GMB API, Gemini API. List new endpoints, scopes, report types, version bumps, deprecation deadlines.` });\nqueries.push({ phase: 'action_audit', category: 'Advertising Platforms', query: `What API updates were released in the last 7 days (as of ${scanDate}) by: Meta Marketing API, LinkedIn Marketing API, Microsoft Advertising API, Amazon Ads API, Pinterest Ads API, Reddit Ads API, X Ads API? New versions, endpoints, targeting options, conversion tracking, deprecations.` });\nqueries.push({ phase: 'action_audit', category: 'CRM & Sales', query: `What new API endpoints or capabilities were added in the last 7 days (as of ${scanDate}) by: HubSpot API, Salesforce REST API, Apollo.io API, Gong API? New objects, endpoints, webhook events, rate limit changes, migration deadlines.` });\nqueries.push({ phase: 'action_audit', category: 'Productivity & Collaboration', query: `API updates in the last 7 days (as of ${scanDate}) by: Slack API, Notion API, Microsoft Graph API? New endpoints, scopes, webhook events, Block types, deprecations.` });\nqueries.push({ phase: 'new_api_radar', category: 'Big Tech New APIs & Services', query: `What brand NEW APIs, SDKs, or developer services were LAUNCHED (not updated) in the last 14 days (as of ${scanDate}) by Google, AWS, Apple, Microsoft, Salesforce, Adobe, Cloudflare? For each: what it does, REST API availability, pricing/free tier, relevance to B2B marketing automation.` });\nqueries.push({ phase: 'tool_discovery', category: 'New Free APIs & Tools', query: `Search Product Hunt (last 7 days), GitHub trending, Hacker News for NEW AI tools and APIs as of ${scanDate} relevant to: B2B marketing automation, cold email, content generation, SEO, lead enrichment, browser automation, workflow automation. Only tools with REST API or self-hostable. I already have: ${registrySummary}. Don't list tools I already have.` });\nqueries.push({ phase: 'tool_discovery', category: 'Research & Intelligence Tools', query: `New features or API capabilities in the last 14 days (as of ${scanDate}) by: Perplexity AI, Exa.ai, Tavily, SerpAPI, ScrapingBee, Browserless, Firecrawl, Apify, PhantomBuster, Clay? New endpoints, models, data sources, pricing changes.` });\nqueries.push({ phase: 'tool_discovery', category: 'SEO & Content Tools', query: `New features or API updates in the last 7 days (as of ${scanDate}) by: SEMrush, Ahrefs, Moz, Surfer SEO, Clearscope, Frase, Copy.ai, Jasper AI, WordPress REST API, Webflow API, Vercel? Also any notable NEW SEO or AI writing APIs.` });\nreturn queries.map(q => ({ json: q }));"
+        },
+        "id": "build-queries",
+        "name": "Build Research Queries",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1180,
+          400
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://api.perplexity.ai/chat/completions",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Authorization",
+                "value": "=Bearer {{ $vars.PERPLEXITY_API_KEY }}"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\n  \"model\": \"sonar-pro\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"You are a technical API researcher for a B2B marketing automation agency. Provide specific factual updates with dates, version numbers, endpoint paths, URLs. Format as bullet lists. Each bullet: **Product/API Name**: description. Include source URLs. If no updates, say 'No significant updates this week'.\"},\n    {\"role\": \"user\", \"content\": {{ JSON.stringify($json.query) }}}\n  ],\n  \"max_tokens\": 2000,\n  \"temperature\": 0.1,\n  \"return_citations\": true\n}",
+          "options": {
+            "timeout": 45000,
+            "batching": {
+              "batch": {
+                "batchSize": 2,
+                "batchInterval": 3000
+              }
+            }
+          }
+        },
+        "id": "perplexity-research",
+        "name": "Perplexity Research",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1420,
+          400
+        ],
+        "onError": "continueRegularOutput"
+      },
+      {
+        "parameters": {
+          "jsCode": "const items = $input.all();\nconst registry = $node['Process Registry Data'].json;\nconst results = { action_audit: [], new_api_radar: [], tool_discovery: [] };\nconst queryOrder = [{phase:'action_audit',category:'AI / LLM Providers'},{phase:'action_audit',category:'Google APIs'},{phase:'action_audit',category:'Advertising Platforms'},{phase:'action_audit',category:'CRM & Sales'},{phase:'action_audit',category:'Productivity & Collaboration'},{phase:'new_api_radar',category:'Big Tech New APIs & Services'},{phase:'tool_discovery',category:'New Free APIs & Tools'},{phase:'tool_discovery',category:'Research & Intelligence Tools'},{phase:'tool_discovery',category:'SEO & Content Tools'}];\nconst unhelpful = /I cannot provide|I don't have|I would need|I apologize/i;\nfor (let i = 0; i < items.length; i++) {\n  const item = items[i];\n  const meta = queryOrder[i] || {phase:'action_audit',category:'Unknown'};\n  let content = '', citations = [];\n  if (item.json.choices && item.json.choices[0]) { content = item.json.choices[0].message?.content || ''; citations = item.json.citations || []; }\n  else if (item.json.error) { content = '_Error: ' + (item.json.error.message||'API error') + '_'; }\n  const skipped = unhelpful.test(content) || content.length < 50;\n  results[meta.phase].push({ phase:meta.phase, category:meta.category, content: skipped?'_No actionable intel this week_':content, citations, hasUpdates:!skipped&&content.length>100, skipped });\n}\nreturn [{ json: { results, scanDate:registry.scanDate, totalDomains:registry.totalDomains, totalActions:registry.totalActions } }];"
+        },
+        "id": "parse-results",
+        "name": "Parse & Organize Results",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1660,
+          400
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const data = $input.first().json;\nconst results = data.results;\nconst scanDate = data.scanDate || new Date().toISOString().split('T')[0];\nconst totalDomains = data.totalDomains || 51;\nconst totalActions = data.totalActions || 401;\nfunction toSlack(t) { return t.replace(/\\*\\*(.+?)\\*\\*/g,'*$1*').replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/g,'<$2|$1>').replace(/\\[\\d+\\]/g,'').trim(); }\nfunction fmtBullets(content, cites) { let lines = toSlack(content).split('\\n').map(l=>l.trim()).filter(l=>l&&!l.toLowerCase().includes('no significant update')); lines = lines.map(l => l.startsWith('- ')||l.startsWith('\\u2022 ') ? l : '- '+l); if (cites && cites.length > 0) lines.push('_Sources: '+cites.slice(0,3).map((c,i)=>`<${c}|src ${i+1}>`).join(' | ')+'_'); return lines.join('\\n'); }\nconst phaseH = { action_audit:':mag: Action Gaps \\u2014 New Endpoints on APIs We Use', new_api_radar:':rocket: New API Launches from Big Tech', tool_discovery:':star2: New Tools & APIs Worth Evaluating' };\nconst catE = { 'AI / LLM Providers':':robot_face:','Google APIs':':mag:','Advertising Platforms':':chart_with_upwards_trend:','CRM & Sales':':handshake:','Productivity & Collaboration':':gear:','Big Tech New APIs & Services':':rocket:','New Free APIs & Tools':':star2:','Research & Intelligence Tools':':microscope:','SEO & Content Tools':':pencil2:' };\nconst blocks = [];\nblocks.push({ type:'header', text:{type:'plain_text',text:'API & Tool Intelligence Brief',emoji:true} });\nblocks.push({ type:'context', elements:[{type:'mrkdwn',text:`:calendar: Week of ${scanDate}  |  *${totalDomains} APIs monitored*  |  *${totalActions} actions tracked*`}] });\nblocks.push({ type:'divider' });\nlet totalFindings = 0;\nfor (const phase of ['action_audit','new_api_radar','tool_discovery']) {\n  const secs = results[phase]||[];\n  const active = secs.filter(s=>s.hasUpdates&&!s.skipped);\n  const quiet = secs.filter(s=>!s.hasUpdates||s.skipped);\n  totalFindings += active.length;\n  blocks.push({ type:'section', text:{type:'mrkdwn',text:phaseH[phase]} });\n  if (!active.length) { blocks.push({ type:'context', elements:[{type:'mrkdwn',text:'_No actionable findings this week_'}] }); }\n  else { for (const s of active) { let fmt = fmtBullets(s.content, s.citations); if (fmt.length>2800) fmt = fmt.substring(0,2800)+'\\n_...truncated_'; blocks.push({ type:'section', text:{type:'mrkdwn',text:`${catE[s.category]||':pushpin:'} *${s.category}*\\n${fmt}`} }); } }\n  if (quiet.length) blocks.push({ type:'context', elements:[{type:'mrkdwn',text:`:white_check_mark: *No changes:* ${quiet.map(s=>s.category).join(', ')}`}] });\n  blocks.push({ type:'divider' });\n}\nblocks.push({ type:'context', elements:[{type:'mrkdwn',text:`_Ascend GTM Intelligence  |  ${totalFindings} categories with updates  |  Perplexity sonar-pro  |  Mondays 9 AM ET_`}] });\nconst fallback = `API & Tool Intelligence Brief \\u2014 Week of ${scanDate}: ${totalFindings} categories with findings across ${totalDomains} APIs.`;\nreturn [{ json: { blocks:blocks.slice(0,49), text:fallback, totalFindings } }];"
+        },
+        "id": "format-slack",
+        "name": "Format Slack Digest",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1900,
+          400
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://slack.com/api/chat.postMessage",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "slackOAuth2Api",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={\n  \"channel\": \"#alerts\",\n  \"text\": {{ JSON.stringify($json.text) }},\n  \"blocks\": {{ JSON.stringify($json.blocks) }}\n}",
+          "options": {
+            "timeout": 15000
+          }
+        },
+        "id": "slack-post",
+        "name": "Post to Slack",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          2140,
+          400
+        ],
+        "credentials": {
+          "slackOAuth2Api": {
+            "id": "Td6a13CD9P2O5K2U",
+            "name": "SLACK_OAUTH_ACCOUNT"
+          }
+        }
+      }
+    ],
+    "connections": {
+      "Weekly Monday 9AM": {
+        "main": [
+          [
+            {
+              "node": "Fetch Domain Registry",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Fetch Action Registry",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Manual Run": {
+        "main": [
+          [
+            {
+              "node": "Fetch Domain Registry",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Fetch Action Registry",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fetch Domain Registry": {
+        "main": [
+          [
+            {
+              "node": "Merge Registry Data",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fetch Action Registry": {
+        "main": [
+          [
+            {
+              "node": "Merge Registry Data",
+              "type": "main",
+              "index": 1
+            }
+          ]
+        ]
+      },
+      "Merge Registry Data": {
+        "main": [
+          [
+            {
+              "node": "Process Registry Data",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Process Registry Data": {
+        "main": [
+          [
+            {
+              "node": "Build Research Queries",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Research Queries": {
+        "main": [
+          [
+            {
+              "node": "Perplexity Research",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Perplexity Research": {
+        "main": [
+          [
+            {
+              "node": "Parse & Organize Results",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Parse & Organize Results": {
+        "main": [
+          [
+            {
+              "node": "Format Slack Digest",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Format Slack Digest": {
+        "main": [
+          [
+            {
+              "node": "Post to Slack",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "timezone": "America/New_York",
+      "errorWorkflow": "YSUNsXBHe0fPA2nc",
+      "callerPolicy": "workflowsFromSameOwner",
+      "availableInMCP": false
+    }
+  }
+}
