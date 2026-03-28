@@ -1,0 +1,321 @@
+{
+  "snapshot_at": "2026-03-28T16:49:50.413Z",
+  "reason": "Pre-modification snapshot: No reason provided",
+  "session_id": "unknown-session",
+  "workflow": {
+    "name": "PLATFORM_GUARDIAN",
+    "id": "NE9gzUTOGjQGgXcd",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "cronExpression",
+                "expression": "0 6 * * *"
+              }
+            ]
+          }
+        },
+        "name": "Daily 6am",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          0,
+          300
+        ],
+        "id": "63c74eab-741f-4b3d-9a0a-655a4acda570"
+      },
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "guardian-check",
+          "authentication": "headerAuth",
+          "responseMode": "lastNode",
+          "options": {}
+        },
+        "name": "On-Demand Trigger",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2.1,
+        "position": [
+          0,
+          520
+        ],
+        "webhookId": "guardian-check-001",
+        "id": "4056144d-ccdd-40b1-a58c-77737096452a",
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "yyHKK186zwYZXlFW",
+            "name": "PLATFORM_INTERNAL_AUTH"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "method": "GET",
+          "url": "={{ $vars.N8N_HOST + '/api/v1/credentials' }}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "X-N8N-API-KEY",
+                "value": "={{ $vars.N8N_API_KEY }}"
+              }
+            ]
+          },
+          "options": {
+            "timeout": 15000
+          }
+        },
+        "name": "Fetch Credentials",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          260,
+          400
+        ],
+        "id": "6d1a4dcf-eca8-45d8-9e33-fd4cec32e27d"
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "const rawInput = $input.first().json;\nconst credList = rawInput.data || (Array.isArray(rawInput) ? rawInput : []);\nconst now = new Date();\nconst STALE_DAYS = 14;\nconst seenIds = new Set();\nconst uniqueCreds = credList.filter(c => { if (seenIds.has(c.id)) return false; seenIds.add(c.id); return true; });\nconst nameCount = {};\nfor (const c of uniqueCreds) { const key = c.type + '::' + c.name; nameCount[key] = (nameCount[key] || 0) + 1; }\nconst issues = [];\nfor (const c of uniqueCreds) {\n  const updatedAt = new Date(c.updatedAt);\n  const daysSinceUpdate = Math.floor((now - updatedAt) / 86400000);\n  const isOAuth = (c.type || '').toLowerCase().includes('oauth');\n  const isStale = isOAuth && daysSinceUpdate > STALE_DAYS;\n  const typeKey = c.type + '::' + c.name;\n  const isDuplicate = nameCount[typeKey] > 1;\n  let status = 'healthy'; let errorType = ''; let errorMessage = '';\n  if (isStale) { status = 'stale'; errorType = 'oauth_stale'; errorMessage = 'OAuth not refreshed in ' + daysSinceUpdate + 'd'; }\n  if (isDuplicate) { if (status === 'healthy') status = 'warning'; errorType = errorType ? errorType + ',duplicate' : 'duplicate'; errorMessage = errorMessage ? errorMessage + '; Dup (' + nameCount[typeKey] + 'x)' : 'Dup (' + nameCount[typeKey] + 'x)'; }\n  if (status !== 'healthy') { issues.push({ domain: c.type || 'unknown', client: 'ascend', status, last_checked_at: now.toISOString(), last_success_at: '', last_status_code: 0, error_type: errorType, error_message: errorMessage, actions_tested: 1, actions_passed: 0, failure_count: 1, check_source: 'GUARDIAN_v1', _cred_id: c.id, _cred_name: c.name }); }\n}\nconst healthy = uniqueCreds.length - issues.length;\nconst stale = issues.filter(r => r.status === 'stale').length;\nconst warnings = issues.filter(r => r.status === 'warning').length;\nconst writeRecords = issues.map(i => ({ domain: i.domain, client: i.client, status: i.status, last_checked_at: i.last_checked_at, last_success_at: i.last_success_at, last_status_code: i.last_status_code, error_type: i.error_type, error_message: i.error_message, actions_tested: i.actions_tested, actions_passed: i.actions_passed, failure_count: i.failure_count, check_source: i.check_source }));\nwriteRecords.push({ domain: 'SUMMARY', client: 'ascend', status: stale > 0 ? 'critical' : warnings > 0 ? 'warning' : 'healthy', last_checked_at: now.toISOString(), last_success_at: now.toISOString(), last_status_code: 200, error_type: '', error_message: 'Total: ' + uniqueCreds.length + ' Healthy: ' + healthy + ' Stale: ' + stale + ' Warnings: ' + warnings, actions_tested: uniqueCreds.length, actions_passed: healthy, failure_count: issues.length, check_source: 'GUARDIAN_v1' });\nreturn [{ json: { summary: { total: uniqueCreds.length, healthy, stale, warnings, timestamp: now.toISOString(), has_critical: stale > 0, tenant_id: 'ascend' }, credentials: writeRecords, issue_details: issues.map(i => i._cred_name + ' (' + i.error_type + ')').join(', ') } }];"
+        },
+        "name": "Analyze Credentials",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          500,
+          400
+        ],
+        "id": "7e3d6591-2abc-4a2c-9a8d-3a88feb93cc6"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ $vars.N8N_HOST + '/api/v1/data-tables/' + $vars.DT_CREDENTIAL_HEALTH + '/rows' }}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "X-N8N-API-KEY",
+                "value": "={{ $vars.N8N_API_KEY }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({ data: $json.credentials }) }}",
+          "options": {
+            "timeout": 30000
+          }
+        },
+        "name": "Write to Credential Health",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          740,
+          400
+        ],
+        "continueOnFail": true,
+        "id": "7013c711-0e5c-420e-9bd0-dacd4add9809"
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "leftValue": "={{ $(\"Analyze Credentials\").first().json.summary.has_critical }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "equals"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        },
+        "name": "Has Critical Issues?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.2,
+        "position": [
+          980,
+          400
+        ],
+        "id": "a6808515-aa3f-4071-bb9d-dc31e322a1d4"
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://slack.com/api/chat.postMessage",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "slackOAuth2Api",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({ channel: '#n8n-alerts', text: ':shield: GUARDIAN Alert: ' + $('Analyze Credentials').first().json.summary.stale + ' stale OAuth, ' + $('Analyze Credentials').first().json.summary.warnings + ' warnings out of ' + $('Analyze Credentials').first().json.summary.total + ' credentials. Issues: ' + ($('Analyze Credentials').first().json.issue_details || 'none') }) }}",
+          "options": {
+            "timeout": 10000
+          }
+        },
+        "name": "Slack Critical Alert",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1220,
+          300
+        ],
+        "continueOnFail": true,
+        "credentials": {
+          "slackOAuth2Api": {
+            "id": "Td6a13CD9P2O5K2U",
+            "name": "SLACK_OAUTH_ACCOUNT"
+          }
+        },
+        "id": "dbecf283-598b-485d-a89d-9d1e298cc145"
+      },
+      {
+        "parameters": {
+          "mode": "manual",
+          "duplicateItem": false,
+          "assignments": {
+            "assignments": [
+              {
+                "id": "r1",
+                "name": "status",
+                "value": "={{ $('Analyze Credentials').first().json.summary.has_critical ? 'ISSUES_FOUND' : 'ALL_HEALTHY' }}",
+                "type": "string"
+              },
+              {
+                "id": "r2",
+                "name": "total",
+                "value": "={{ $('Analyze Credentials').first().json.summary.total }}",
+                "type": "number"
+              },
+              {
+                "id": "r3",
+                "name": "tenant_id",
+                "value": "ascend",
+                "type": "string"
+              }
+            ]
+          },
+          "options": {
+            "includeOtherFields": false
+          }
+        },
+        "name": "Format Response",
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3.4,
+        "position": [
+          1220,
+          520
+        ],
+        "id": "121d29ab-0096-4d1f-92de-710483f1d122"
+      }
+    ],
+    "connections": {
+      "Daily 6am": {
+        "main": [
+          [
+            {
+              "node": "Fetch Credentials",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "On-Demand Trigger": {
+        "main": [
+          [
+            {
+              "node": "Fetch Credentials",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fetch Credentials": {
+        "main": [
+          [
+            {
+              "node": "Analyze Credentials",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Analyze Credentials": {
+        "main": [
+          [
+            {
+              "node": "Write to Credential Health",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Write to Credential Health": {
+        "main": [
+          [
+            {
+              "node": "Has Critical Issues?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Has Critical Issues?": {
+        "main": [
+          [
+            {
+              "node": "Slack Critical Alert",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Slack Critical Alert": {
+        "main": [
+          [
+            {
+              "node": "Format Response",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "callerPolicy": "workflowsFromSameOwner",
+      "availableInMCP": true,
+      "saveManualExecutions": true,
+      "errorWorkflow": "4l0H7MgNyOHbYPbO"
+    }
+  }
+}
