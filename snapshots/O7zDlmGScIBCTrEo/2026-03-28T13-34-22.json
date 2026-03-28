@@ -1,0 +1,286 @@
+{
+  "snapshot_at": "2026-03-28T13:34:22.011Z",
+  "reason": "Pre-modification snapshot: No reason provided",
+  "session_id": "unknown-session",
+  "workflow": {
+    "name": "PLATFORM_RESPONDER",
+    "id": "O7zDlmGScIBCTrEo",
+    "active": true,
+    "nodes": [
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "platform-responder",
+          "authentication": "none",
+          "responseMode": "responseNode",
+          "options": {}
+        },
+        "id": "resp-webhook",
+        "name": "Error Webhook",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2.1,
+        "position": [
+          1,
+          0
+        ],
+        "webhookId": "responder-webhook-001"
+      },
+      {
+        "parameters": {
+          "inputSource": "passthrough"
+        },
+        "id": "resp-sub-trigger",
+        "name": "Sub-Workflow Trigger",
+        "type": "n8n-nodes-base.executeWorkflowTrigger",
+        "typeVersion": 1.1,
+        "position": [
+          0,
+          280
+        ]
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "const input = $input.first().json;\nconst body = input.body || input;\n\nconst workflowId = body.workflow_id || 'unknown';\nconst workflowName = body.workflow_name || 'unknown';\nconst nodeName = body.node_name || 'unknown';\nconst errorMessage = body.error_message || 'Unknown error';\nconst errorCategory = body.error_category || 'unknown';\nconst severity = body.severity || 'MEDIUM';\nconst executionId = body.execution_id || 'unknown';\nconst executionUrl = body.execution_url || '';\nconst isTransient = body.is_transient || false;\nconst timestamp = body.timestamp || new Date().toISOString();\n\n// Generate error hash for deduplication\nconst hashInput = workflowId + '|' + errorCategory + '|' + nodeName;\nlet errorHash = 0;\nfor (let i = 0; i < hashInput.length; i++) {\n  const char = hashInput.charCodeAt(i);\n  errorHash = ((errorHash << 5) - errorHash) + char;\n  errorHash = errorHash & errorHash;\n}\nerrorHash = Math.abs(errorHash).toString(16).substring(0, 12);\n\nconst ERROR_LEDGER_ID = 'JofPMjEUNrEu9lao';\nconst KNOWN_FIXES_ID = 'nBU0Mfop4Yqb1W7q';\n\nlet occurrenceCount = 0;\nlet previousFixes = [];\nlet strategy = 'normal';\nlet knownFix = null;\n\ntry {\n  const ledgerResp = await this.helpers.request({\n    method: 'GET',\n    uri: $vars.N8N_HOST + '/api/v1/data-tables/' + ERROR_LEDGER_ID + '/rows?limit=250',\n    headers: { 'X-N8N-API-KEY': $vars.N8N_INTERNAL_API_KEY },\n    json: true,\n    resolveWithFullResponse: false,\n    simple: false\n  });\n  const rows = (ledgerResp && ledgerResp.data) || [];\n  const matching = rows.filter(r => r.error_hash === errorHash);\n  occurrenceCount = matching.length;\n  previousFixes = matching.map(r => r.fix_attempted).filter(Boolean);\n} catch(e) {}\n\ntry {\n  const fixesResp = await this.helpers.request({\n    method: 'GET',\n    uri: $vars.N8N_HOST + '/api/v1/data-tables/' + KNOWN_FIXES_ID + '/rows?limit=250',\n    headers: { 'X-N8N-API-KEY': $vars.N8N_INTERNAL_API_KEY },\n    json: true,\n    resolveWithFullResponse: false,\n    simple: false\n  });\n  const fixes = (fixesResp && fixesResp.data) || [];\n  const msgLower = errorMessage.toLowerCase();\n  for (const fix of fixes) {\n    if (fix.error_pattern) {\n      try {\n        const re = new RegExp(fix.error_pattern, 'i');\n        if (re.test(msgLower) || re.test(errorCategory)) {\n          knownFix = fix;\n          break;\n        }\n      } catch(e) {}\n    }\n  }\n} catch(e) {}\n\nif (occurrenceCount >= 5) strategy = 'hard_escalate';\nelse if (occurrenceCount >= 3) strategy = 'fundamentally_different_approach';\nelse if (occurrenceCount >= 2) strategy = 're_research_deeper';\nelse strategy = 'normal';\n\nconst strategyGuide = {\n  hard_escalate: '5+ recurrences. Hard escalate with full history of every fix attempted. List all previous fixes and why they failed.',\n  fundamentally_different_approach: '3+ recurrences. Previous fixes failed repeatedly. Find a FUNDAMENTALLY different approach. Do NOT retry the same category of fix.',\n  re_research_deeper: '2nd occurrence. Previous fix was not permanent. Research deeper — the root cause is different from what was assumed.',\n  normal: 'First occurrence. Normal resolution loop.'\n};\n\nconst knownFixInfo = knownFix\n  ? 'MATCH FOUND: ' + knownFix.fix_id + ' — ' + knownFix.fix_description + '\\nDocs: ' + (knownFix.docs_reference || 'none') + '\\nConfidence: ' + knownFix.confidence\n  : 'No known fix matched. Research required.';\n\nconst prevFixInfo = previousFixes.length > 0\n  ? previousFixes.map((f, i) => 'Fix #' + (i+1) + ': ' + f).join('\\n')\n  : 'None — first occurrence.';\n\nconst systemPrompt = `You are RESPONDER — the Ascend GTM Platform reactive recovery agent. Your ONLY job is to RESOLVE errors on the n8n platform.\n\n## SELF-HEALING SLA (MANDATORY)\nEvery error MUST follow this loop:\n1. DETECT — error received (done — see context)\n2. CLASSIFY — known pattern or unknown? Check known fix info below\n3. RESEARCH — use the Gateway tool to read platform docs, check workflow configs. For n8n issues, research via the Gateway's handover domain\n4. FIX — apply permanent fix. Use Gateway tool with domain=handover, action=safe_modify_workflow for workflow changes\n5. TARGETED TEST — verify the fix. Test the specific endpoint or workflow that failed\n6. REGRESSION TEST — test related functionality that could be affected\n7. CONFIRM — only after both tests pass, status=RESOLVED\n\n## VALID FINAL STATES\n- RESOLVED: Fix applied and both tests passed\n- ESCALATED: With valid reason ONLY: UI-only OAuth re-auth, billing decisions, architecture affecting multiple tenants, 3rd-party outage, 5+ recurrences after research-backed fixes\n- \"Alert sent\" is NEVER valid. You MUST attempt a fix.\n\n## RECURRENCE STRATEGY: ${strategy.toUpperCase()} (occurrence #${occurrenceCount + 1})\n${strategyGuide[strategy]}\n\n## KNOWN FIX\n${knownFixInfo}\n\n## PREVIOUS FIXES ATTEMPTED\n${prevFixInfo}\n\n## PLATFORM CONSTRAINTS\n- Code node HTTP: this.helpers.request() only\n- DataTable: INSERT + READ only. No row update/delete via API\n- Workflow updates: handover.safe_modify_workflow (GET+modify+PUT+snapshot)\n- NEVER add Execute Workflow nodes in error handlers\n- Gateway: POST /webhook/orchestrate-v2 with {domain, action, client, params}\n\n## YOUR TOOLS\n- **Ascend Gateway**: Call domain=handover for platform ops (safe_modify_workflow, list_workflows, read_rows, datatable_insert, log_change)\n- **Think**: Plan your approach before acting\n\n## RESPONSE FORMAT\nAfter completing the SLA loop, respond with EXACTLY this JSON:\n{\"status\": \"RESOLVED|ESCALATED\", \"fix_description\": \"what you did\", \"docs_consulted\": \"urls or references checked\", \"test_result\": \"PASS|FAIL with details\", \"escalation_reason\": \"only if ESCALATED\"}`;\n\nconst agentPrompt = `ERROR CONTEXT:\n- Workflow: ${workflowName} (${workflowId})\n- Node: ${nodeName}\n- Category: ${errorCategory}\n- Severity: ${severity}\n- Message: ${errorMessage}\n- Execution: ${executionUrl}\n- Transient: ${isTransient}\n- Occurrence: #${occurrenceCount + 1}\n- Strategy: ${strategy}\n\nFollow the Self-Healing SLA. Think first, then act. Respond with the JSON format specified.`;\n\nreturn [{ json: {\n  error_hash: errorHash,\n  workflow_id: workflowId,\n  workflow_name: workflowName,\n  node_name: nodeName,\n  error_message: errorMessage,\n  error_category: errorCategory,\n  severity,\n  execution_id: executionId,\n  execution_url: executionUrl,\n  is_transient: isTransient,\n  occurrence_count: occurrenceCount + 1,\n  strategy,\n  known_fix_id: knownFix ? knownFix.fix_id : null,\n  timestamp,\n  systemPrompt,\n  agentPrompt\n} }];"
+        },
+        "id": "resp-enrich",
+        "name": "Enrich Error Context",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          300,
+          140
+        ]
+      },
+      {
+        "parameters": {
+          "promptType": "define",
+          "text": "={{ $json.agentPrompt }}",
+          "options": {
+            "systemMessage": "={{ $json.systemPrompt }}",
+            "maxIterations": 12,
+            "returnIntermediateSteps": false
+          }
+        },
+        "id": "resp-agent",
+        "name": "RESPONDER Agent",
+        "type": "@n8n/n8n-nodes-langchain.agent",
+        "typeVersion": 3.1,
+        "position": [
+          600,
+          140
+        ]
+      },
+      {
+        "parameters": {
+          "model": {
+            "__rl": true,
+            "mode": "list",
+            "value": "claude-sonnet-4-6",
+            "cachedResultName": "Claude Sonnet 4.6"
+          },
+          "options": {
+            "maxTokensToSample": 4096,
+            "temperature": 0.2
+          }
+        },
+        "id": "resp-llm",
+        "name": "Anthropic Chat Model",
+        "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+        "typeVersion": 1.3,
+        "position": [
+          440,
+          400
+        ],
+        "credentials": {
+          "anthropicApi": {
+            "id": "4lTjrrcFOpTrTa2Q",
+            "name": "Anthropic account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "description": "Execute a platform action through the Ascend Gateway. Pass api_name (e.g. handover, hubspot, n8n), action (e.g. safe_modify_workflow, list_workflows, read_rows, datatable_insert, log_change, get_platform_context), params (action-specific parameters), and tenant_id ('ascend' for platform ops). Key actions: handover.safe_modify_workflow with {workflow_id, changes} to modify workflows. handover.read_rows with {table_id} to read DataTable rows. handover.datatable_insert with {table_id, rows} to insert DataTable rows. handover.log_change to log platform changes.",
+          "source": "database",
+          "workflowId": {
+            "__rl": true,
+            "value": "6yLwbfsZ1QZYOojS",
+            "mode": "id"
+          },
+          "workflowInputs": {
+            "mappingMode": "autoMapInputData"
+          }
+        },
+        "id": "resp-tool-gateway",
+        "name": "Ascend Gateway",
+        "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+        "typeVersion": 2.2,
+        "position": [
+          600,
+          400
+        ]
+      },
+      {
+        "parameters": {},
+        "id": "resp-tool-think",
+        "name": "Think",
+        "type": "@n8n/n8n-nodes-langchain.toolThink",
+        "typeVersion": 1.1,
+        "position": [
+          760,
+          400
+        ]
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "const agentOutput = $input.first().json;\nconst ctx = $('Enrich Error Context').first().json;\n\nlet response = agentOutput.output || agentOutput.text || '';\nif (typeof response !== 'string') response = JSON.stringify(response);\n\nlet status = 'unknown';\nlet fixDescription = '';\nlet docsConsulted = '';\nlet testResult = '';\nlet escalationReason = '';\n\ntry {\n  const jsonMatch = response.match(/\\{[\\s\\S]*\\}/);\n  if (jsonMatch) {\n    const parsed = JSON.parse(jsonMatch[0]);\n    status = parsed.status || 'unknown';\n    fixDescription = parsed.fix_description || '';\n    docsConsulted = parsed.docs_consulted || '';\n    testResult = parsed.test_result || '';\n    escalationReason = parsed.escalation_reason || '';\n  }\n} catch(e) {\n  fixDescription = response.substring(0, 500);\n}\n\nreturn [{ json: {\n  error_hash: ctx.error_hash,\n  workflow_id: ctx.workflow_id,\n  workflow_name: ctx.workflow_name,\n  node_name: ctx.node_name,\n  error_category: ctx.error_category,\n  error_message: ctx.error_message,\n  severity: ctx.severity,\n  occurrence_count: ctx.occurrence_count,\n  status,\n  fix_attempted: fixDescription,\n  fix_result: testResult,\n  docs_consulted: docsConsulted,\n  escalation_reason: escalationReason,\n  first_seen: ctx.occurrence_count <= 1 ? ctx.timestamp : '',\n  last_seen: ctx.timestamp,\n  responder_execution_id: $execution.id,\n  response\n} }];"
+        },
+        "id": "resp-format",
+        "name": "Format Result",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          880,
+          140
+        ]
+      },
+      {
+        "parameters": {
+          "mode": "runOnceForAllItems",
+          "jsCode": "const item = $input.first().json;\nconst ERROR_LEDGER_ID = 'JofPMjEUNrEu9lao';\n\ntry {\n  await this.helpers.request({\n    method: 'POST',\n    uri: $vars.N8N_HOST + '/api/v1/data-tables/' + ERROR_LEDGER_ID + '/rows',\n    headers: {\n      'X-N8N-API-KEY': $vars.N8N_INTERNAL_API_KEY,\n      'Content-Type': 'application/json'\n    },\n    body: JSON.stringify({ data: [{\n      error_hash: item.error_hash,\n      workflow_id: item.workflow_id,\n      workflow_name: item.workflow_name,\n      node_name: item.node_name,\n      error_category: item.error_category,\n      error_message: (item.error_message || '').substring(0, 500),\n      severity: item.severity,\n      occurrence_count: item.occurrence_count,\n      status: item.status,\n      fix_attempted: (item.fix_attempted || '').substring(0, 500),\n      fix_result: (item.fix_result || '').substring(0, 200),\n      docs_consulted: (item.docs_consulted || '').substring(0, 500),\n      resolution_notes: item.escalation_reason || '',\n      first_seen: item.first_seen || item.last_seen,\n      last_seen: item.last_seen,\n      responder_execution_id: item.responder_execution_id\n    }] }),\n    resolveWithFullResponse: false,\n    simple: false\n  });\n} catch(e) {}\n\nreturn [{ json: {\n  status: item.status,\n  fix_description: item.fix_attempted,\n  test_result: item.fix_result,\n  escalation_reason: item.escalation_reason,\n  occurrence: item.occurrence_count,\n  error_hash: item.error_hash\n} }];"
+        },
+        "id": "resp-log",
+        "name": "Log to Error Ledger",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1140,
+          140
+        ]
+      },
+      {
+        "parameters": {
+          "options": {}
+        },
+        "id": "resp-respond",
+        "name": "Respond to Webhook",
+        "type": "n8n-nodes-base.respondToWebhook",
+        "typeVersion": 1.5,
+        "position": [
+          1380,
+          140
+        ],
+        "continueOnFail": true
+      }
+    ],
+    "connections": {
+      "Error Webhook": {
+        "main": [
+          [
+            {
+              "node": "Enrich Error Context",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Sub-Workflow Trigger": {
+        "main": [
+          [
+            {
+              "node": "Enrich Error Context",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Enrich Error Context": {
+        "main": [
+          [
+            {
+              "node": "RESPONDER Agent",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "RESPONDER Agent": {
+        "main": [
+          [
+            {
+              "node": "Format Result",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Anthropic Chat Model": {
+        "ai_languageModel": [
+          [
+            {
+              "node": "RESPONDER Agent",
+              "type": "ai_languageModel",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Ascend Gateway": {
+        "ai_tool": [
+          [
+            {
+              "node": "RESPONDER Agent",
+              "type": "ai_tool",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Think": {
+        "ai_tool": [
+          [
+            {
+              "node": "RESPONDER Agent",
+              "type": "ai_tool",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Format Result": {
+        "main": [
+          [
+            {
+              "node": "Log to Error Ledger",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Log to Error Ledger": {
+        "main": [
+          [
+            {
+              "node": "Respond to Webhook",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "callerPolicy": "workflowsFromSameOwner",
+      "availableInMCP": false,
+      "saveManualExecutions": true
+    }
+  }
+}
